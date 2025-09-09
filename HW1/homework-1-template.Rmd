@@ -1,0 +1,189 @@
+---
+title: 'STAT 4710/5710: Homework 1'
+author: 'David Dai'
+date: 'Due: September 16, 2025 at 11:59am'
+output:
+  bookdown::pdf_document2:
+    number_sections: yes
+    toc: yes
+    toc_depth: '3'
+urlcolor: blue
+---
+
+```{r setup, include=FALSE}
+options(scipen = 0, digits = 3) # controls number of significant digits printed
+ggplot2::theme_set(ggplot2::theme_bw()) # set ggplot theme
+options(warn=-1) # optional, to suppress warnings; comment out if you want to see warnings
+```
+
+# Instructions {.unnumbered}
+
+## Materials and collaboration {.unlisted .unnumbered}
+
+The policy on allowed materials and collaboration is as stated on the Syllabus:
+
+>"Students are permitted to work together on homework assignments, but must write up and submit solutions individually. In particular, students may not copy each others’ solutions. Students may consult all course materials, textbooks, the internet, or AI tools (e.g. ChatGPT) to complete their homework. Students may not use solutions to problems that may be available online and/or from past iterations of the course. For each homework, students must disclose all classmates with whom they collaborated, which AI tools they used, and how they used them. Failure to do so will result in a 10-point penalty."
+
+In accordance with this policy, please type in the answers after each:
+
+*Please disclose all classmates with whom you collaborated:* 
+
+*Please disclose which AI tools you used, and how you used them:* 
+
+\textbf{\textcolor{red}{Failure to answer the above questions will result in a 10-point penalty.}}
+
+## Writeup {.unlisted .unnumbered}
+
+Use this document as a starting point for your writeup, \textcolor{blue}{adding your solutions after "**Solution**" for the corresponding questions. Add your R code using code chunks (with properly loaded packages) and add your text answers using **bold text**.} Consult the [preparing reports guide](https://katsevich-teaching.github.io/stat-4710-fall-2023/assets/preparing-reports.pdf) for guidance on compilation, creation of figures and tables, and presentation quality. In particular, if the instructions ask you to "print a table", you should use `kable`. If the instructions ask you to "print a tibble", you should not use `kable` and instead print the tibble directly. 
+
+
+## Programming {.unlisted .unnumbered}
+
+Apart from the "R basics" part, the `tidyverse` paradigm for data visualization, manipulation, and wrangling is **required**. Codes written in base R may receive deductions at the discretion of the instructor, since the purpose of assignments is to practice tidyverse workflows (e.g., `filter`, `mutate`, `group_by`, `summarize`, `join`, `ggplot2`).
+
+Students who strongly prefer to use Python for homework may do so. If you choose this option, you must:
+
+- Use `pandas` (or similar) for data wrangling with method chaining (`groupby`, `merge`, `assign`, etc.) rather than raw loops.
+- Use `plotnine` for visualization (preferred, since it parallels ggplot2). If using seaborn/matplotlib, you must still include the required plot elements (labels, 45° line, smoothing curve, facets, etc.).
+- Present both code chunks and the corresponding outputs/interpretations in your PDF.
+
+The deduction rules will be similar to those for R. 
+
+## Grading {.unlisted .unnumbered}
+The point value for each problem sub-part is indicated. There are 100 points possible on this homework, evaluated based on the correctness of the numerical results and plots. When a problem asks for a plot:
+
+- **Axes and labels**: Always include informative axis labels and, if appropriate, titles.
+- **Required elements**: If the instructions ask for a 45° line, smoothing curve, or facets, these must be included.
+- **Clarity**: Points may be deducted if plots are cluttered, unreadable, or missing labels.
+
+
+## Submission {.unlisted .unnumbered}
+
+Compile your writeup to PDF and submit to Gradescope.
+
+\newpage
+
+# R basics (10 points)
+
+## Creating vectors of divisible integers (5 points)
+
+
+**Solution.**
+```{r}
+vec1 = rev(seq(0, 200, 13)) # descend the sequence with step as 13
+vec1
+```
+ 
+## Creating repeated vectors (5 points)
+ 
+
+**Solution.** 
+```{r}
+# repeat 1 to 25 times given 25 odd numbers between 101 to 149
+vec2 = rep(seq(101,149,2), times= seq(1,25))  
+vec2
+```
+ 
+
+\newpage 
+# Case study: NYC Flights 2013 {-}
+  
+
+# Processing (45 points)
+
+## Import (5 points)
+ 
+**Solution.**
+```{r}
+library(tidyverse)
+flight_raw = read_csv("NYCflights13sub.csv")
+dim(flight_raw) # It has 33672 rows and 19 columns
+flight_raw
+
+# Select numeric/categorical columns
+num_col_flight = select(flight_raw, where(is.numeric))
+numeric_cols = names(num_col_flight)
+cat_cols = setdiff(names(flight_raw), numeric_cols)
+print(numeric_cols) # These are numeric columns
+print(cat_cols) # These are categorical columns
+```
+**This Data has 33672 rows and 19 columns. Three numeric variables are: year, 
+ month, distance. Three categorical variables are: carrier, origin, dest.**
+
+## Tidy: missing values (5 points)
+ 
+**Solution.**
+```{r}
+# Use drop_na, see documentation: https://tidyr.tidyverse.org/reference/drop_na.html
+flights_clean = flight_raw |> drop_na(dep_delay, arr_delay, air_time)
+print(flights_clean)
+
+# Calculate number of rows removed
+num_row_removed = nrow(flight_raw) - nrow(flights_clean)
+print(num_row_removed)
+```
+
+**953 rows were dropped due to missingness.**
+
+## Tidy: filtering major carriers (15 points)
+ 
+**Solution.**
+```{r}
+# use summarize with n() for carrier counts
+carrier_counts = flights_clean |> summarize(carrier_counts = n(), .by = carrier) |> arrange(desc(carrier_counts))
+print(carrier_counts)
+
+# get main carriers with at least 1000 flights 
+main_carriers = carrier_counts |> filter(carrier_counts >= 1000) |> 
+                         select(carrier)
+print(main_carriers$carrier)
+```
+
+```{r}
+# Further filter flights_clean for main carrier
+num_row_pre_filter = nrow(flights_clean)
+flights_clean = flights_clean |> filter(carrier %in% main_carriers$carrier)
+num_row_post_filter = nrow(flights_clean)
+print(flights_clean)
+print(num_row_pre_filter - num_row_post_filter)
+```
+
+**1060 rows were further dropped due to this filtering**
+
+## Quality control (20 points)
+ 
+**Solution.**
+```{r}
+# Check min/max value for dep_time 
+min_max_dep_time = flights_clean |> summarize(min_sch_dep = min(sched_dep_time),
+                                              max_sch_dep = max(sched_dep_time),
+                                              min_dep = min(dep_time),
+                                              max_dep = max(dep_time))
+print(min_max_dep_time)
+```
+
+**Given our examination above, the first two digits in a four digits number 
+is the hour, and last two digits is the minute for dep_time and sched_dep_time**
+
+```{r}
+# Get dep_time and sched_dep_time hours and mins
+flights_clean |> mutate()
+```
+
+\newpage
+
+# Explore (45 points)
+ 
+
+## Departure and arrival delays (15 points)
+ 
+
+**Solution.**
+ 
+## Delays by month and by carrier (20 points)
+ 
+**Solution.**
+ 
+## Carrier efficiency (10 points)
+
+**Solution.**
