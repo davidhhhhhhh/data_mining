@@ -130,7 +130,10 @@ print(num_row_removed)
 **Solution.**
 ```{r}
 # use summarize with n() for carrier counts
-carrier_counts = flights_clean |> summarize(carrier_counts = n(), .by = carrier) |> arrange(desc(carrier_counts))
+carrier_counts = flights_clean |> 
+  summarize(carrier_counts = n(), .by = carrier) |> 
+  arrange(desc(carrier_counts))
+
 print(carrier_counts)
 
 # get main carriers with at least 1000 flights 
@@ -155,10 +158,12 @@ print(num_row_pre_filter - num_row_post_filter)
 **Solution.**
 ```{r}
 # Check min/max value for dep_time 
-min_max_dep_time = flights_clean |> summarize(min_sch_dep = min(sched_dep_time),
-                                              max_sch_dep = max(sched_dep_time),
-                                              min_dep = min(dep_time),
-                                              max_dep = max(dep_time))
+min_max_dep_time = flights_clean |> 
+  summarize(min_sch_dep = min(sched_dep_time),
+            max_sch_dep = max(sched_dep_time),
+            min_dep = min(dep_time),
+            max_dep = max(dep_time)
+  )
 print(min_max_dep_time)
 ```
 
@@ -167,8 +172,41 @@ is the hour, and last two digits is the minute for dep_time and sched_dep_time**
 
 ```{r}
 # Get dep_time and sched_dep_time hours and mins
-flights_clean |> mutate()
+flights_clean = flights_clean |> 
+  mutate(
+    dep_time_hr = dep_time %/% 100,
+    dep_time_min = dep_time %% 100,
+    sched_dep_time_hr = sched_dep_time %/% 100,
+    sched_dep_time_min = sched_dep_time %% 100
+  )
+
+
+# get dep_delay_computed 
+flights_clean = flights_clean |> 
+  mutate(
+    dep_delay_computed = (dep_time_hr - sched_dep_time_hr) * 60 + 
+      dep_time_min - sched_dep_time_min,
+    # assume the actual depart cannot be 10 hours before scheduled depart, we add
+    # extra day (1440 min) for day difference
+    dep_delay_computed = if_else(
+      dep_delay_computed < -600, dep_delay_computed + 1440, dep_delay_computed
+      )
+  )
+
+# get the ggplot 
+ggplot(data=flights_clean) + 
+  geom_point(mapping = aes(x=dep_delay_computed, y=dep_delay), alpha=0.5) +
+  geom_abline(slope = 1, intercept = 0,
+              color = "red", linetype = "dashed", linewidth = 1) +
+  labs(
+    title = "Computed vs Reported Departure Delay",
+    x = "Computed Departure Delay (minutes)",
+    y = "Reported Departure Delay (minutes)"
+  ) + 
+  theme(plot.title = element_text(hjust = 0.5))
 ```
+
+**The computed and provided delay time statistics seem to be the same from the plot and we do not observe any discrepancies**
 
 \newpage
 
@@ -179,7 +217,33 @@ flights_clean |> mutate()
  
 
 **Solution.**
- 
+```{r}
+ggplot(data=flights_clean, 
+       mapping = aes(x=dep_delay, y=arr_delay)) +
+  geom_point() + 
+  geom_abline(aes(slope = 1, intercept = 0, color="45_degree line")) +
+  geom_smooth(aes(color = "smooth fit"))+
+  labs(title = "departure vs arrival delay",
+       x = "departure delay",
+       y = "arrival delay",
+       color = "Legend" ) +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+**The relationship between departure time and arrival time appears to be linear based on the smooth curve**
+
+```{r}
+ggplot(data=flights_clean, 
+       mapping = aes(x=dep_delay, y=arr_delay)) +
+  geom_point() + 
+  labs(title = "departure vs arrival delay",
+       x = "departure delay",
+       y = "arrival delay") +
+  theme(plot.title = element_text(hjust = 0.5)) + 
+  facet_wrap(~origin)
+```
+**The departure and arrival delay appears to be linear in all three airports**
+
 ## Delays by month and by carrier (20 points)
  
 **Solution.**
