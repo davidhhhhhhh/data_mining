@@ -27,8 +27,10 @@ The policy on allowed materials and collaboration is as stated on the Syllabus:
 In accordance with this policy, please type in the answers after each:
 
 *Please disclose all classmates with whom you collaborated:* 
+Michael Fuentes
 
 *Please disclose which AI tools you used, and how you used them:* 
+ChatGPT for providing me examples in ggplot and summarize()
 
 \textbf{\textcolor{red}{Failure to answer the above questions will result in a 10-point penalty.}}
 
@@ -263,9 +265,37 @@ delay_yr = flights_clean |>
 print(delay_yr)
 
 # Join delay yr to delay_aggregate
+delay_aggregate = left_join(delay_aggregate, delay_yr, by="carrier")
+print(delay_aggregate)
 
+# Plot the monthly mean arrrive time 
+# compute avg carrier delay
+carrier_means <- delay_aggregate |>
+  summarize(mean_delay = mean(delay_month), .by = carrier)
+
+ggplot(data = delay_aggregate, aes(x = month, y = delay_month)) +
+  geom_point() +
+  geom_line() +
+  facet_wrap(~carrier) + 
+  geom_hline(data = carrier_means, aes(yintercept = mean_delay), color = "red", linetype = "dashed")
 ```
- 
 ## Carrier efficiency (10 points)
 
 **Solution.**
+```{r}
+# Get efficiency per carreir
+efficiency_carrier = flights_clean |>
+                     summarize(on_time_rate = sum(arr_delay <= 0) / n(), 
+                               mean_dep_delay = mean(
+                                 ifelse(dep_delay > 0, dep_delay, 0)
+                               ), .by = carrier) |> 
+                     mutate(efficiency = on_time_rate / (1 + mean_dep_delay))
+                    
+                      
+print(efficiency_carrier)
+
+# Get top three efficient carriers
+print(arrange(efficiency_carrier, desc(efficiency)))
+```
+
+**Based on above tibble US, DL, AA are top 3 carriers with highest efficiency**
