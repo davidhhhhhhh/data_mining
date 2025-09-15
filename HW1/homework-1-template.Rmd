@@ -247,6 +247,24 @@ ggplot(data=flights_clean,
 ## Delays by month and by carrier (20 points)
  
 **Solution.**
+```{r}
+# Check mean arrival delay time in a month per carrier
+delay_aggregate = flights_clean |> 
+                  summarize(delay_month = mean(arr_delay),
+                            .by = c(month, carrier)
+                            )
+print(delay_aggregate)
+
+# Check mean arrival delay time in a year per carrier
+delay_yr = flights_clean |> 
+           summarize(delay_by_year = mean(arr_delay),
+                     .by = carrier # since all data are in year 2013
+                     )
+print(delay_yr)
+
+# Join delay yr to delay_aggregate
+
+```
  
 ## Carrier efficiency (10 points)
 
