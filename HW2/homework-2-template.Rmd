@@ -1,0 +1,258 @@
+---
+title: 'STAT 4710/5710: Homework 2'
+author: 'David Dai'
+date: 'Sep 25, 2025'
+output:
+  bookdown::pdf_document2:
+    number_sections: yes
+    toc: yes
+    toc_depth: '3'
+urlcolor: blue
+---
+
+```{r setup, include=FALSE}
+options(scipen = 0, digits = 3) # controls number of significant digits printed
+ggplot2::theme_set(ggplot2::theme_bw()) # set ggplot theme
+options(warn=-1) # optional, to suppress warnings; comment out if you want to see warnings
+```
+
+```{r, echo=FALSE}
+cross_validate_spline <- function(x, y, nfolds = 10, df_values = 2:20, seed = NULL) {
+  stopifnot(length(x) == length(y))
+  n <- length(x)
+  if (!is.null(seed)) set.seed(seed)
+
+  # Same fold construction style as in the Rmd
+  folds <- sample(rep(1:nfolds, length.out = n))
+  train_df <- data.frame(x = x, y = y, fold = folds)
+
+  # Helper: compute CV mean & SE for a single displayed df value
+  # NOTE: to match your validation plot, we fit ns(x, df = df_display - 1)
+  cv_for_df <- function(df_display) {
+    df_use <- df_display - 1
+    oof <- numeric(n)
+    for (k in 1:nfolds) {
+      out <- train_df[train_df$fold != k, , drop = FALSE]
+      in_  <- train_df[train_df$fold == k, , drop = FALSE]
+      fit <- lm(y ~ ns(x, df = df_use), data = out)
+      oof[folds == k] <- predict(fit, newdata = in_)
+    }
+    # fold-wise CV estimates (same aggregation as in the Rmd)
+    cv_by_fold <- tapply((oof - train_df$y)^2, INDEX = train_df$fold, FUN = mean)
+    c(mean = mean(cv_by_fold), se = sd(cv_by_fold) / sqrt(nfolds))
+  }
+
+  # Run across all df values
+  mat <- t(vapply(df_values, cv_for_df, numeric(2)))
+  cv_table <- data.frame(
+    df = df_values,
+    cv_mean = mat[, "mean"],
+    cv_se   = mat[, "se"]
+  )
+
+  # df.min and 1SE rule (prefer simpler/smaller df within 1 SE)
+  min_row <- cv_table[which.min(cv_table$cv_mean), ]
+  df.min  <- min_row$df
+  thresh  <- min_row$cv_mean + min_row$cv_se
+  df.1se  <- with(cv_table[cv_table$cv_mean <= thresh, ], min(df))
+
+  # Plot (points + line + error bars; dashed lines at min and 1SE)
+  cv_plot <- ggplot(cv_table, aes(df, cv_mean)) +
+    geom_line(linewidth = 0.8, color = "black") +
+    geom_point(size = 2, color = "black") +
+    geom_errorbar(aes(ymin = cv_mean - cv_se, ymax = cv_mean + cv_se),
+                  width = 0.3, color = "black") +
+    geom_hline(yintercept = min_row$cv_mean, linetype = 2) +
+    geom_hline(yintercept = thresh, linetype = 2) +
+    geom_vline(xintercept = df.min, linetype = 3) +
+    geom_vline(xintercept = df.1se, linetype = 3) +
+    labs(x = "Degrees of freedom", y = "CV error") +
+    theme_bw(base_size = 12) +
+    theme(panel.grid.minor = element_blank())
+
+  list(cv_table = cv_table, cv_plot = cv_plot, df.1se = df.1se, df.min = df.min)
+}
+```
+
+# Instructions {.unnumbered}
+
+## Materials and collaboration {.unlisted .unnumbered}
+
+The policy on allowed materials and collaboration is as stated on the Syllabus:
+
+>"Students are permitted to work together on homework assignments, but must write up and submit solutions individually. In particular, students may not copy each others’ solutions. Students may consult all course materials, textbooks, the internet, or AI tools (e.g. ChatGPT) to complete their homework. Students may not use solutions to problems that may be available online and/or from past iterations of the course. For each homework, students must disclose all classmates with whom they collaborated, which AI tools they used, and how they used them. Failure to do so will result in a 10-point penalty."
+
+In accordance with this policy, 
+
+*Please disclose all classmates with whom you collaborated:* 
+NA
+
+*Please disclose which AI tools you used, and how you used them:* 
+I used ChatGPT for R code grammar example
+
+\textbf{\textcolor{red}{Failure to answer the above questions will result in a 10-point penalty.}}
+
+## Writeup {.unlisted .unnumbered}
+
+\textcolor{blue}{Use} `homework-2-template.Rmd` \textcolor{blue}{as a starting point for your writeup, adding your solutions after "**Solution**". Add your R code using code chunks and add your text answers using **bold text**.} Consult the [preparing reports guide](https://katsevich-teaching.github.io/stat-4710-fall-2023/assets/preparing-reports.pdf) for guidance on compilation, creation of figures and tables, and presentation quality. If the instructions ask you to "print a tibble", you should print the tibble directly. 
+
+
+## Programming {.unlisted .unnumbered}
+
+We encourage you to follow the `tidyverse` paradigm for data visualization, manipulation, and wrangling, as in the first homework, to practice tidyverse workflows (e.g., `filter`, `mutate`, `group_by`, `summarize`, `join`, `ggplot2`).
+
+Students who strongly prefer to use Python for homework may do so. If you choose this option, you are **required** to present both code chunks and the corresponding outputs/interpretations in your PDF. In addition, it's recommended that you:
+
+- Use `pandas` for data manipulation (preferred, since it parallels `dplyr`).
+- Use `plotnine` for visualization (preferred, since it parallels ggplot2). If using seaborn/matplotlib, you must still include the required plot elements (labels, 45° line, smoothing curve, facets, etc.).  
+ 
+
+```{r, message=FALSE}
+library(tidyverse)
+library(splines) 
+```
+
+**Code completion.** In some problems, the task is to complete an incomplete code chunk provided. In those problems, in the template, there is `eval = FALSE` in the chunk header to prevent evaluation errors. You should remove `eval = FALSE` after you have completed the code to enable evaluation and printing of results.
+
+## Grading {.unlisted .unnumbered}
+The point value for each problem sub-part is indicated. There are 100 points possible on this homework, evaluated based on the correctness of the numerical results and plots. When a problem asks for a plot:
+
+- **Axes and labels**: Always include informative axis labels and, if appropriate, titles.
+- **Required elements**: If the instructions ask for a 45° line, smoothing curve, or facets, these must be included.
+- **Clarity**: Points may be deducted if plots are cluttered, unreadable, or missing labels.
+
+## Submission {.unlisted .unnumbered}
+
+Compile your writeup to PDF and submit to Gradescope.
+
+\newpage
+
+# Case study: spline regression model selection (64 points)
+ 
+
+## Import data (2 points)
+
+**Solution.** 
+```{r}
+library(tidyverse)
+wage_df = read_csv("wages.csv")
+# log transform wage column 
+wage_df$wage = log(wage_df$wage)
+print(wage_df)
+```
+
+## Tidy (2 points)
+
+**Solution.** 
+```{r}
+# clean the wage_df
+wage_df = wage_df |> 
+          select(wage, age, education) |> 
+          drop_na() |> 
+          filter(education %in% c("HS Grad", "College Grad"))
+
+print(wage_df)
+```
+ 
+
+## Explore (8 points)
+
+**Solution.** 
+```{r}
+# check count of each education 
+```
+
+## Prepare for modeling (1 point)
+ 
+
+```{r, eval = FALSE}
+set.seed(4710) # set seed for reproducibility
+n <- nrow(wage_df)
+train_samples <- sample(1:n, size = 0.8 * n, replace = FALSE)
+```
+ 
+## Validation set approach to model selection (33 points)
+
+
+### Data splitting (3 points)
+
+**Solution.** 
+ 
+### Estimate MSE given a df (15 points)
+
+**Solution.** 
+
+```{r, eval = FALSE}
+validation_mse <- function(learn_data, val_data, df) {
+  spline_fit <- [TO COMPLETE]
+  predictions <- [TO COMPLETE]
+  mse <- [TO COMPLETE]
+  return(mse)
+}
+```
+ 
+### Model selection based on estimated MSE (10 points)
+
+**Solution.** 
+ 
+### Fit chosen model and assessment (5 points)
+
+**Solution.** 
+ 
+## Cross validation model selection (18 points)
+
+### Model selection (11 points)
+
+**Solution.** 
+
+### Final fit (5 points)
+
+**Solution.** 
+ 
+
+### Compare with validation set approach (2 points)
+
+**Solution.** 
+ 
+
+\newpage 
+# Case study: kNN classification with Default data (36 points)
+ 
+
+```{r}
+library(ISLR2)
+data("Default")
+```
+
+## Data split (2 points)
+
+**Solution.** 
+
+## Class imbalance and baseline (6 points)
+
+**Solution.** 
+ 
+## kNN classification (28 points)
+
+
+### Load results 
+
+**Solution.** 
+
+### Compute error metrics in classification (4 points)
+
+**Solution.** 
+ 
+### Plot metrics vs. K (6 points)
+
+**Solution.** 
+ 
+
+### Model selection and improvement (conceptual) (8 points)
+ 
+**Solution.** 
+
+### Model complexity (conceptual) (10 points)
+
+**Solution.** 
+ 
