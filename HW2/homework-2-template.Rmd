@@ -159,16 +159,39 @@ print(wage_df)
 
 **Solution.** 
 ```{r}
-# check count of each education 
+# check count of each education level
+print(table(wage_df$education))
+
+# Plot distribution of wage based on education level
+ggplot(wage_df, aes(x = education, y=wage)) +
+  geom_boxplot() + 
+  labs(
+    title = "Wage distribution by education",
+    x = "Education level",
+    y = "Wage"
+  )
+
+# plot relationship between age and wage
+ggplot(wage_df, aes(x = age, y = wage)) +
+  geom_point(alpha = 0.6) +
+  facet_wrap(~education) +
+  labs(
+    title = "Wage vs Age by Education Level",
+    x = "Age",
+    y = "Wage"
+  )
 ```
+**There are 971 HS Grad and 685 College Grad. For wages among different educational level, College Grad have a higher median wage compared with High School Grad; the wage variance among college grad is also smaller than those of high school grad, particularly in the age group between 40 to 60**
 
 ## Prepare for modeling (1 point)
  
 
-```{r, eval = FALSE}
+```{r}
 set.seed(4710) # set seed for reproducibility
 n <- nrow(wage_df)
 train_samples <- sample(1:n, size = 0.8 * n, replace = FALSE)
+wage_train = wage_df[train_samples,]
+wage_test = wage_df[-train_samples,]
 ```
  
 ## Validation set approach to model selection (33 points)
@@ -177,27 +200,90 @@ train_samples <- sample(1:n, size = 0.8 * n, replace = FALSE)
 ### Data splitting (3 points)
 
 **Solution.** 
+```{r}
+# Split train_test based on education level
+wage_train_HS = wage_train[wage_train$education == "HS Grad",]
+wage_train_coll = wage_train[wage_train$education == "College Grad",]
+wage_test_HS = wage_test[wage_test$education == "HS Grad",]
+wage_test_coll = wage_test[wage_test$education == "College Grad",]
+
+# Create learning and validation set
+set.seed(4710) # set seed for reproducibility
+HS_n <- nrow(wage_train_HS)
+Coll_n = nrow(wage_train_coll)
+HS_learn_samples <- sample(1:HS_n, size = 0.7 * HS_n, replace = FALSE)
+coll_learn_samples <- sample(1:Coll_n, size = 0.7 * Coll_n, replace = FALSE)
+
+wage_learn_HS =  wage_train_HS[HS_learn_samples,]
+wage_val_HS = wage_train_HS[-HS_learn_samples,]
+wage_learn_coll = wage_train_coll[coll_learn_samples,]
+wage_val_coll = wage_train_coll[-coll_learn_samples,]
+```
  
 ### Estimate MSE given a df (15 points)
 
 **Solution.** 
 
-```{r, eval = FALSE}
+```{r}
+library(splines)
 validation_mse <- function(learn_data, val_data, df) {
-  spline_fit <- [TO COMPLETE]
-  predictions <- [TO COMPLETE]
-  mse <- [TO COMPLETE]
+  spline_fit <- lm(wage ~ ns(age, df=df), data = learn_data)
+  predictions <- predict(spline_fit, newdata = val_data)
+  mse <- mean((predictions - val_data$wage)^2)
   return(mse)
 }
+df_seq = seq(2,20,1)
+val_errors_HS = numeric(length(df_seq))
+val_errors_coll = numeric(length(df_seq))
+for (i in 1:length(df_seq)) {
+  val_errors_HS[i] = validation_mse(wage_learn_HS, wage_val_HS, df_seq[i])
+  val_errors_coll[i] = validation_mse(wage_learn_coll, wage_val_coll, df_seq[i])
+}
+print(val_errors_HS)
+print(val_errors_coll)
 ```
  
 ### Model selection based on estimated MSE (10 points)
 
 **Solution.** 
- 
+```{r}
+# plots for HS grad degree of freedom vs. mse
+mse_df <- data.frame(
+  df   = rep(df_seq, 2),
+  mse  = c(val_errors_HS, val_errors_coll),
+  group = rep(c("HS Grad", "College Grad"), each = length(df_seq))
+)
+
+ggplot(mse_df, aes(x = df, y = mse, color = group)) +
+  geom_line(size = 1) +
+  geom_point() +
+  labs(
+    title = "Validation MSE vs Degrees of Freedom",
+    x = "Degrees of Freedom (df)",
+    y = "Validation MSE",
+    color = "Education Group"
+  ) +
+  theme_minimal()
+```
+**For HS Grad group, df=14 minimizes the validation MSE; for College Grad, df=4 minimizes the validation MSE.**
+
 ### Fit chosen model and assessment (5 points)
 
 **Solution.** 
+```{r}
+df_HS = 14
+df_coll = 4
+HS_spline_fit = lm(wage~ns(age, df = df_HS), data = wage_train_HS)
+coll_spline_fit = lm(wage~ns(age, df = df_coll), data = wage_train_coll)
+HS_spline_predict = predict(HS_spline_fit, newdata=wage_test_HS)
+coll_spline_predict = predict(coll_spline_fit, newdata=wage_test_coll)
+HS_mse = mean((HS_spline_predict - wage_test_HS$wage)^2)
+coll_mse = mean((coll_spline_predict - wage_test_coll$wage)^2)
+print(HS_mse)
+print(coll_mse)
+```
+
+**Spline with best df from validation set approach for HS Grad is 0.00479 and for College Grad is 0.00486**
  
 ## Cross validation model selection (18 points)
 
