@@ -289,17 +289,111 @@ print(coll_mse)
 
 ### Model selection (11 points)
 
+```{r, echo = FALSE}
+cross_validate_spline <- function(x, y, nfolds = 10, df_values = 2:15, seed = NULL) {
+  stopifnot(length(x) == length(y))
+  n <- length(x)
+  if (!is.null(seed)) set.seed(seed)
+
+  # Same fold construction style as in the Rmd
+  folds <- sample(rep(1:nfolds, length.out = n))
+  train_df <- data.frame(x = x, y = y, fold = folds)
+
+  # Helper: compute CV mean & SE for a single displayed df value
+  # NOTE: to match your validation plot, we fit ns(x, df = df_display - 1)
+  cv_for_df <- function(df_display) {
+    df_use <- df_display - 1
+    oof <- numeric(n)
+    for (k in 1:nfolds) {
+      out <- train_df[train_df$fold != k, , drop = FALSE]
+      in_  <- train_df[train_df$fold == k, , drop = FALSE]
+      fit <- lm(y ~ ns(x, df = df_use), data = out)
+      oof[folds == k] <- predict(fit, newdata = in_)
+    }
+    # fold-wise CV estimates (same aggregation as in the Rmd)
+    cv_by_fold <- tapply((oof - train_df$y)^2, INDEX = train_df$fold, FUN = mean)
+    c(mean = mean(cv_by_fold), se = sd(cv_by_fold) / sqrt(nfolds))
+  }
+
+  # Run across all df values
+  mat <- t(vapply(df_values, cv_for_df, numeric(2)))
+  cv_table <- data.frame(
+    df = df_values,
+    cv_mean = mat[, "mean"],
+    cv_se   = mat[, "se"]
+  )
+
+  # df.min and 1SE rule (prefer simpler/smaller df within 1 SE)
+  min_row <- cv_table[which.min(cv_table$cv_mean), ]
+  df.min  <- min_row$df
+  thresh  <- min_row$cv_mean + min_row$cv_se
+  df.1se  <- with(cv_table[cv_table$cv_mean <= thresh, ], min(df))
+
+  # Plot (points + line + error bars; dashed lines at min and 1SE)
+  cv_plot <- ggplot(cv_table, aes(df, cv_mean)) +
+    geom_line(linewidth = 0.8, color = "black") +
+    geom_point(size = 2, color = "black") +
+    geom_errorbar(aes(ymin = cv_mean - cv_se, ymax = cv_mean + cv_se),
+                  width = 0.3, color = "black") +
+    geom_hline(yintercept = min_row$cv_mean, linetype = 2) +
+    geom_hline(yintercept = thresh, linetype = 2) +
+    geom_vline(xintercept = df.min, linetype = 3) +
+    geom_vline(xintercept = df.1se, linetype = 3) +
+    labs(x = "Degrees of freedom", y = "CV error") +
+    theme_bw(base_size = 12) +
+    theme(panel.grid.minor = element_blank())
+
+  list(cv_table = cv_table, cv_plot = cv_plot, df.1se = df.1se, df.min = df.min)
+}
+```
 **Solution.** 
+```{r}
+cv_HS = cross_validate_spline(wage_train_HS$age,
+                              wage_train_HS$wage,
+                              nfolds = 10,
+                              df_values = 2:20,
+                              seed = 4710)
+cv_coll = cross_validate_spline(wage_train_coll$age,
+                              wage_train_coll$wage,
+                              nfolds = 10,
+                              df_values = 2:20,
+                              seed = 4710)
+print(cv_HS$cv_plot)
+print(cv_coll$cv_plot)
+```
+**For HS Grad cv approach, the df.min is 7 and df.1se is 4; for Coll Grad cv approach, df.min is 9 and df.1se is 3. Base on the cv plot, I would choose df=4 for HS Grad spline and df=3 for college Grad spline. The validation set approach has resulting best df different from CV approach. Based on the MSE plots on both approaches, I would choose df=4 for HS Grad and df=3 for Coll Grad, since higher df does not provide significant better MSE on both approaches.**
 
 ### Final fit (5 points)
 
 **Solution.** 
- 
+```{r}
+df_hs_cv = 4
+df_coll_cv = 3
+HS_spline_cv = lm(wage~ns(age, df = df_hs_cv), data = wage_train_HS)
+coll_spline_cv = lm(wage~ns(age, df = df_coll_cv), data = wage_train_coll)
+
+# get testing mse
+HS_spline_predict_cv = predict(HS_spline_cv, newdata=wage_test_HS)
+coll_spline_predict_cv = predict(coll_spline_cv, newdata=wage_test_coll)
+HS_mse_cv = mean((HS_spline_predict_cv - wage_test_HS$wage)^2)
+coll_mse_cv = mean((coll_spline_predict_cv - wage_test_coll$wage)^2)
+print(HS_mse_cv)
+print(coll_mse_cv)
+
+# also extract training mse
+HS_train_preds <- predict(HS_spline_cv, newdata = wage_train_HS)
+HS_train_mse <- mean((wage_train_HS$wage - HS_train_preds)^2)
+coll_train_preds <- predict(coll_spline_cv, newdata = wage_train_coll)
+coll_train_mse <- mean((wage_train_coll$wage - coll_train_preds)^2)
+print(HS_train_mse)
+print(coll_train_mse)
+```
+**I chose df.1se for both education levels. Training and testing MSE for HS_Grad is 0.00444 and 0.00452; training and testing MSE for Coll_Grad is 0.00495 and 0.00488. The training error is smaller than testing error for both HS Grad and Coll Grad; however, since training and testing error do not differ much, the occurred overfitting is not that substantial.**
 
 ### Compare with validation set approach (2 points)
 
 **Solution.** 
- 
+**Validation set approach has test MSE 0.00479 for HS Grad and 0.00486 for College Grad. CV approach has test MSE 0.00452 for HS Grad and 0.00488 for College Grad. In HS Grad case, degree of freedom (df) chosen by CV is better than validation set approach; In College Grad case, df chosen by validation set is slightly better than CV.**
 
 \newpage 
 # Case study: kNN classification with Default data (36 points)
@@ -313,32 +407,93 @@ data("Default")
 ## Data split (2 points)
 
 **Solution.** 
+```{r}
+set.seed(4710) # set seed for reproducibility
+n_default <- nrow(Default)
+train_samples_d <- sample(1:n_default, size = 0.8 * n_default, replace = FALSE)
+default_train = Default[train_samples_d,]
+default_test = Default[-train_samples_d,]
+```
 
 ## Class imbalance and baseline (6 points)
 
 **Solution.** 
- 
+```{r}
+# check distribution of training dataset
+print(table(default_train$default))
+
+# check majority class
+majority_class = names(which.max(table(default_train$default)))
+print(majority_class)
+
+# make baseline predictions
+baseline_preds = rep(majority_class, nrow(default_test))
+
+# check accuracy 
+baseline_accuracy = mean(baseline_preds == default_test$default)
+print(baseline_accuracy)
+```
+**The "No" class has 7740 data points, which is far more than "Yes" class, which has 260 data points in the training dataset. For the baseline classifer which always report "No", the accuracy on test dataset is 0.964. However, since in this case false negative have a huge impact on the prediction results, accuracy is not a good metric and a classifier only predict no is not a good one.**
+
 ## kNN classification (28 points)
 
 
 ### Load results 
 
 **Solution.** 
+```{r}
+knn_counts = read_csv("knn_counts_by_K.csv")
+```
 
 ### Compute error metrics in classification (4 points)
 
 **Solution.** 
+```{r}
+# calculate accuracy, precision, recall and F1_score
+knn_counts$accuracy = (knn_counts$TN + knn_counts$TP) / (knn_counts$TN + knn_counts$TP + knn_counts$FN + knn_counts$FP)
+knn_counts$precision = knn_counts$TP / (knn_counts$TP + knn_counts$FP)
+knn_counts$recall = knn_counts$TP / (knn_counts$TP + knn_counts$FN)
+knn_counts$F1_score = 2 * (knn_counts$precision * knn_counts$recall) / (knn_counts$precision + knn_counts$recall)
+print(knn_counts)
+```
+
  
 ### Plot metrics vs. K (6 points)
 
 **Solution.** 
- 
+```{r}
+# get only learning and validation split 
+knn_training = knn_counts[knn_counts$split %in% c("learning", "validation"),]
+
+# plot based on accuracy
+ggplot(data=knn_training, aes(x = K, y=accuracy, color = split)) +
+  geom_line() + geom_point() + 
+  labs(
+    title = "K v.s. accuracy",
+    x = "K",
+    y = "accuracy",
+    color = "split"
+  )
+
+# plot based on recall
+ggplot(data=knn_training, aes(x = K, y=recall, color = split)) +
+  geom_line() + geom_point() + 
+  labs(
+    title = "K v.s. recall",
+    x = "K",
+    y = "recall",
+    color = "split"
+  )
+```
+**I noticed the recall is much less than the accuracy level for both learning and validation data. The accuracy level is higher than 0.95 but recall level are below 0.4 for validation dataset. Based on recall formula TP / (TP + FN), one problem of the KNN approach is the large number of FN with respect to TP, resulting a low recall rate.**
 
 ### Model selection and improvement (conceptual) (8 points)
  
 **Solution.** 
+**As a risk manager, I would prefer recall as a metric than accuracy, since I am more concerned with the proportion of false negative that is of a high cost. Using recall and select a K based on validation approach is not a good idea, since we should also consider precision, which can inform when we have much false positives; otherwise, we may come up with a model classifies everything to "Yes". Also, the majority vote for KNN might be an issue since in default data, most of data are "No", only handful are "Yes" and the majority vote mechanism will make KNN more likely to classify "No" as an answer for default. To solve this issue, we can consider adding weights to "No" answer during training to combat the class imbalance problem.**
 
 ### Model complexity (conceptual) (10 points)
 
 **Solution.** 
+**The model complexity increases as K decreases, since a smaller K will make the model more sensitive to slightly change in neighborhood area, hence increase model complexity. The df n/K for KNN model makes sense because the model complexity is inverse proportional with K and proportional with n as more data in the training dataset will make the KNN model to get more diversified predictions based on training data points, which increases model complexity. When K is increased, the model is less likely be influenced by noise in training data, which decreases the variance of the model hence getting better predictions. However, increasing K too large may make the model oversimplified, which increase the bias of the model, hence leading to worse predictions.**
  
