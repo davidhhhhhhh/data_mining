@@ -1,0 +1,421 @@
+---
+title: 'STAT 4710/5710: Homework 3'
+author: 'David Dai' 
+output:
+  bookdown::pdf_document2:
+    number_sections: yes
+    toc: yes
+    toc_depth: '3'
+urlcolor: blue
+---
+
+```{r setup, include=FALSE}
+options(scipen = 0, digits = 3) # controls number of significant digits printed
+ggplot2::theme_set(ggplot2::theme_bw()) # set ggplot theme
+options(warn=-1) # optional, to suppress warnings; comment out if you want to see warnings
+options(show.signif.stars = FALSE)
+```
+
+```{r, echo=FALSE}
+# Plot coefficient paths for glmnet / cv.glmnet
+# - glmnet_fit: a cv.glmnet or glmnet object
+# - data: the training data frame used to fit the model (for sds)
+# - features_to_plot: number of top features (by |coef| at s) to color and label
+# - s: "lambda.1se" (default for cv.glmnet), "lambda.min", or a numeric lambda
+plot_glmnet <- function(glmnet_fit, data, features_to_plot = 0,
+                        s = "lambda.1se",
+                        highlight = c("auto", "topk", "nonzero", "none"),
+                        legend_nrow = "auto",       # set to a number to force rows
+                        legend_max_cols = 3) {      # ~items per row when auto
+  highlight <- match.arg(highlight)
+
+  if (!requireNamespace("ggplot2", quietly = TRUE) ||
+      !requireNamespace("scales", quietly = TRUE)) {
+    stop("Please install 'ggplot2' and 'scales'.")
+  }
+
+  # -- pull fit and lambdas
+  if (inherits(glmnet_fit, "cv.glmnet")) {
+    fit <- glmnet_fit$glmnet.fit
+    lambda_seq <- as.numeric(fit$lambda)
+    s_val <- if (is.character(s)) {
+      switch(s,
+             "lambda.1se" = glmnet_fit$lambda.1se,
+             "lambda.min" = glmnet_fit$lambda.min,
+             stop("s must be 'lambda.1se', 'lambda.min', or numeric."))
+    } else as.numeric(s)
+  } else if (inherits(glmnet_fit, "glmnet")) {
+    fit <- glmnet_fit
+    lambda_seq <- as.numeric(fit$lambda)
+    if (is.character(s)) stop("For glmnet fits, 's' must be numeric.")
+    s_val <- as.numeric(s)
+  } else stop("glmnet_fit must be a cv.glmnet or glmnet object.")
+
+  # -- coefficients across lambda, drop intercept
+  co <- as.matrix(stats::coef(fit, s = lambda_seq))
+  feat_names <- rownames(co)[-1]
+  co <- co[-1, , drop = FALSE]
+
+  # -- standardize by predictor SDs
+  sds <- vapply(feat_names, function(nm) stats::sd(data[[nm]], na.rm = TRUE), numeric(1))
+  sds[is.na(sds)] <- 1
+  co_std <- sweep(co, 1, sds, "*")
+
+  # -- long data
+  df <- data.frame(
+    lambda      = rep(lambda_seq, each = nrow(co_std)),
+    feature     = rep(feat_names, times = ncol(co_std)),
+    coefficient = as.vector(co_std),
+    stringsAsFactors = FALSE
+  )
+
+  # -- which features to color
+  tol <- 1e-12
+  co_at_s_std <- as.numeric(as.matrix(stats::coef(fit, s = s_val))[-1]) * sds
+  nonzero_feats <- feat_names[abs(co_at_s_std) > tol]
+
+  if (features_to_plot > 0 || highlight == "topk") {
+    k <- max(1, min(features_to_plot, length(feat_names)))
+    top_idx <- order(abs(co_at_s_std), decreasing = TRUE)[seq_len(k)]
+    color_feats <- feat_names[top_idx]
+  } else if (highlight == "nonzero") {
+    color_feats <- nonzero_feats
+  } else if (highlight == "auto") {
+    color_feats <- if (length(nonzero_feats) > 0 &&
+                       length(nonzero_feats) <= 0.5 * length(feat_names))
+      nonzero_feats else character(0)
+  } else {
+    color_feats <- character(0)
+  }
+
+  # -- reversed log10 axis with nice breaks
+  revlog10 <- scales::trans_new(
+    "revlog10",
+    transform = function(x) -log10(x),
+    inverse   = function(x) 10^(-x),
+    domain    = c(1e-300, Inf)
+  )
+  nice_lambda_breaks <- function(x) {
+    rng  <- range(x, finite = TRUE)
+    krng <- range(floor(log10(rng)), ceiling(log10(rng)))
+    k    <- seq(krng[1], krng[2])
+    cand <- c(1, 3) * rep(10^k, each = 2)
+    cand[cand >= rng[1] & cand <= rng[2]]
+  }
+
+  library(ggplot2)
+  p <- ggplot(df, aes(lambda, coefficient, group = feature)) +
+    geom_line(color = "grey70", linewidth = 0.4) +
+    geom_vline(xintercept = s_val, linetype = "dashed") +
+    scale_x_continuous(
+      trans  = revlog10,
+      breaks = nice_lambda_breaks(lambda_seq),
+      labels = scales::label_scientific(digits = 0),
+      expand = expansion(mult = c(0.02, 0.02))
+    ) +
+    labs(x = expression(lambda), y = "Standardized Coefficient") +
+    theme_minimal(base_size = 12) +
+    theme(panel.grid.minor.x = element_blank())
+if (length(color_feats) > 0) {
+    df_top <- df[df$feature %in% color_feats, ]
+    n_items <- length(unique(df_top$feature))
+    nrow_legend <- ceiling(n_items / 3)
+    ncol_legend <- 3
+    
+    p <- p +
+      geom_line(data = df_top, aes(color = feature), linewidth = 0.9) +
+      # use scale_color_discrete(... guide = guide_legend(...)) to enforce nrow/ncol
+      scale_color_discrete(
+        guide = guide_legend(
+          title = NULL,
+          nrow = nrow_legend,
+          ncol = ncol_legend,
+          byrow = TRUE,
+          override.aes = list(linewidth = 1.0)
+        )
+      ) +
+      theme(
+        legend.position  = "bottom",
+        legend.direction = "horizontal",
+        # this helps some themes/versions honor multi-row legends at the bottom
+        legend.box       = "vertical"
+      )
+}
+  p
+}
+```
+# Instructions {.unnumbered}
+
+## Materials and collaboration {.unlisted .unnumbered}
+
+The policy on allowed materials and collaboration is as stated on the Syllabus:
+
+>"Students are permitted to work together on homework assignments, but must write up and submit solutions individually. In particular, students may not copy each others’ solutions. Students may consult all course materials, textbooks, the internet, or AI tools (e.g. ChatGPT) to complete their homework. Students may not use solutions to problems that may be available online and/or from past iterations of the course. For each homework, students must disclose all classmates with whom they collaborated, which AI tools they used, and how they used them. Failure to do so will result in a 10-point penalty."
+
+In accordance with this policy, 
+
+*Please disclose all classmates with whom you collaborated:* None 
+
+*Please disclose which AI tools you used, and how you used them:* ChatGPT in debugging r code and creating visualizations.
+
+\textbf{\textcolor{red}{Failure to answer the above questions will result in a 10-point penalty.}}
+
+## Writeup {.unlisted .unnumbered}
+
+\textcolor{blue}{Use} `homework-3-template.Rmd` \textcolor{blue}{as a starting point for your writeup, adding your solutions after "**Solution**". Add your R code using code chunks and add your text answers using **bold text**.} Consult the [preparing reports guide](https://katsevich-teaching.github.io/stat-4710-fall-2023/assets/preparing-reports.pdf) for guidance on compilation, creation of figures and tables, and presentation quality. If the instructions ask you to "print a tibble", you should print the tibble directly. 
+
+
+## Programming {.unlisted .unnumbered}
+
+We encourage you to follow the `tidyverse` paradigm for data visualization, manipulation, and wrangling, as in the first homework, to practice tidyverse workflows (e.g., `filter`, `mutate`, `group_by`, `summarize`, `join`, `ggplot2`).
+
+Students who strongly prefer to use Python for homework may do so. If you choose this option, you are **required** to present both code chunks and the corresponding outputs/interpretations in your PDF. In addition, it's recommended that you:
+
+- Use `pandas` for data manipulation (preferred, since it parallels `dplyr`).
+- Use `plotnine` for visualization (preferred, since it parallels ggplot2). If using seaborn/matplotlib, you must still include the required plot elements (labels, 45° line, smoothing curve, facets, etc.).  
+ 
+
+```{r, message=FALSE}
+library(tidyverse)
+library(splines) 
+library(glmnetUtils)
+```
+
+**Code completion.** In some problems, the task is to complete an incomplete code chunk provided. In those problems, in the template, there is `eval = FALSE` in the chunk header to prevent evaluation errors. You should remove `eval = FALSE` after you have completed the code to enable evaluation and printing of results.
+
+## Grading {.unlisted .unnumbered}
+The point value for each problem sub-part is indicated. There are 100 points possible on this homework, evaluated based on the correctness of the numerical results and plots. When a problem asks for a plot:
+
+- **Axes and labels**: Always include informative axis labels and, if appropriate, titles.
+- **Required elements**: If the instructions ask for a 45° line, smoothing curve, or facets, these must be included.
+- **Clarity**: Points may be deducted if plots are cluttered, unreadable, or missing labels.
+
+## Submission {.unlisted .unnumbered}
+
+Compile your writeup to PDF and submit to Gradescope.
+
+\newpage
+
+# Case study: logistic regression for home loan (45 points)
+ 
+
+## Data import (4 points)
+
+1. **Solution.**
+```{r}
+hmeq = read_csv("home_loan.csv")
+hmeq = drop_na(hmeq)
+print(hmeq)
+```
+2. **Solution.**
+```{r}
+hmeq = hmeq |> mutate(STATUS = ifelse(STATUS == "bad", 1, 0))
+hmeq$STATUS = factor(hmeq$STATUS, levels = c(0,1))
+print(hmeq)
+```
+
+## Data exploration and visualization (4 points)
+
+1. **Solution.**
+```{r}
+ggplot(data = hmeq, mapping = aes(x=DEBTINC)) + 
+  geom_histogram(binwidth = 5) + 
+  geom_vline(aes(xintercept = median(DEBTINC)), color = "red", linetype = "dashed") + 
+  labs(title = "Distribution of DEBTINC with Median Line",
+       x = "Debt-to-Income Ratio",
+       y = "Count")
+```
+**Answer**: Based on the histogram, we noticed it's right skewed, where there are some outliers with heavy debt to income ratio. 
+
+2. **Solution.**
+```{r}
+ggplot(hmeq, aes(x = STATUS, y = DEBTINC, fill = STATUS)) +
+  geom_boxplot(alpha = 0.7) +
+  labs(title = "Debt-to-Income by Credit Status",
+       x = "Credit Status",
+       y = "Debt-to-Income Ratio") +
+  theme_minimal()
+```
+**Answer**: we notice the paid loans generally have low debt to income ratio and default loans generally have outliers with high debt to income ratio. 
+
+## Univariate logistic regression (23 points)
+ 
+
+### Understanding logistic regression (13 points)
+
+1. **Solution.**
+```{r}
+set.seed(4710) # seed set for reproducibility (DO NOT CHANGE) 
+n <- nrow(hmeq)
+train_samples <- sample(1:n, round(0.8 * n))
+hmeq_train = hmeq[train_samples,]
+hmeq_test = hmeq[-train_samples,]
+```
+
+2. **Solution.**
+```{r}
+hmeq_train_subset = hmeq_train |> 
+  filter(VALUE < 50000 & YOJ == 0 & REASON == "DebtCon" & MORTDUE > 23000) |>
+  select(STATUS, DEBTINC)
+print(hmeq_train_subset)
+```
+3. **Solution.**
+In a logistic regression model, the odds of default are given by
+
+$$
+\text{odds(default)} = \exp(\beta_0 + \beta_1 \times \text{DEBTINC})
+$$
+
+Therefore, the probability of default is
+
+$$
+p(\text{default}) = \frac{\exp(\beta_0 + \beta_1 \times \text{DEBTINC})}
+{1 + \exp(\beta_0 + \beta_1 \times \text{DEBTINC})}.
+$$
+
+Given four observations, with two defaulted and two paid loans, the likelihood function is
+
+$$
+\begin{aligned}
+L(\beta_0, \beta_1)
+&= \prod_{i=1}^{4} p_i^{y_i} [1 - p_i]^{1 - y_i} \\[6pt]
+&= 
+\left[\frac{\exp(\beta_0 + \beta_1 \times 25.3)}
+{1 + \exp(\beta_0 + \beta_1 \times 25.3)}\right]  % y=1
+\times
+\left[1 - \frac{\exp(\beta_0 + \beta_1 \times 16.5)}
+{1 + \exp(\beta_0 + \beta_1 \times 16.5)}\right]  % y=0
+\times \\[8pt]
+&\quad
+\left[\frac{\exp(\beta_0 + \beta_1 \times 29.3)}
+{1 + \exp(\beta_0 + \beta_1 \times 29.3)}\right]  % y=1
+\times
+\left[1 - \frac{\exp(\beta_0 + \beta_1 \times 16.7)}
+{1 + \exp(\beta_0 + \beta_1 \times 16.7)}\right].  % y=0
+\end{aligned}
+$$
+4. **Solution.**
+```{r}
+# fit a logistic model based on the subset training data 
+fit1 = glm(STATUS~DEBTINC, family="binomial", data=hmeq_train_subset)
+
+# identify beta_0 be -115.38, beta_1 be 5.47
+summary(fit1)
+```
+**Answer:**  
+The estimated probability of default, given a debt-to-income ratio \(x\), is
+
+$$
+P(\text{STATUS} = 1 \mid \text{DEBTINC} = x)
+= 
+\frac{\exp(-115.38 + 5.47x)}
+     {1 + \exp(-115.38 + 5.47x)}.
+$$
+5. **Solution.**
+Fitted values of $\beta_0$ and $\beta_1$ are obtained by maximizing the likelihood (and log likelihood) function formulated in part 3. 
+
+### Univariate logistic regression on the full data (10 points)
+
+1. **Solution.**
+```{r}
+# fit a logistic model using the whole training dataset
+fit_2 = glm(STATUS~DEBTINC, family = "binomial", data=hmeq_train)
+summary(fit_2)
+```
+2. **Solution.**
+3. **Solution.**
+ 
+
+## Multivariate logistic regression (14 points)
+
+1. **Solution.**
+
+2. **Solution.** 
+3. **Solution.**
+```{r, eval=FALSE}
+... # TO COMPLETE
+misclass_rate <- # TO COMPLETE
+precision <- # TO COMPLETE
+recall <- # TO COMPLETE
+F1 <- # TO COMPLETE
+  
+test_errors <- tribble(
+  ~Metric, ~Value, 
+  "Misclassification_rate", misclass_rate,
+  "Precision", precision,
+  "Recall", recall,
+  "F1_score", F1
+)
+# print the tibble
+test_errors
+```
+
+
+\newpage
+
+# Case study: linear regression for housing prices (55 points)
+ 
+
+## Exploratory data analysis (10 points)
+
+1. **Solution.**
+2. **Solution.**
+3. **Solution.**
+
+## Predictive modeling preparation (1 point)
+ 
+
+**Solution.**
+
+```{r, eval=FALSE}
+set.seed(4710) # seed set for reproducibility (DO NOT CHANGE)
+n <- nrow(ames_data)
+train_samples <- sample(1:n, round(0.8 * n))
+```
+ 
+
+## Ordinary least squares (6 points)
+
+1. **Solution.**
+2. **Solution.**
+3. **Solution.**
+
+
+## Ridge regression (13 points)
+
+1. **Solution.**
+2. **Solution.**
+3. **Solution.**
+4. **Solution.**
+
+
+
+## Lasso regression (10 points)
+
+1. **Solution.**
+2. **Solution.**
+3. **Solution.**
+
+## Evaluation and comparison (15 points)
+
+1. **Solution.**
+
+```{r, eval=FALSE}
+... # TO COMPLETE
+mse_ols <- ... # TO COMPLETE
+mse_ridge <- ... # TO COMPLETE
+mse_lasso <- ... # TO COMPLETE
+
+error_for_models <- tribble(
+  ~Model, ~RMSE, 
+  "Linear", mse_ols, 
+  "Ridge", mse_ridge,
+  "Lasso", mse_lasso
+)
+# print the tibble
+error_for_models
+```
+
+2. **Solution.**
+3. **Solution.**
+4. **Solution.**

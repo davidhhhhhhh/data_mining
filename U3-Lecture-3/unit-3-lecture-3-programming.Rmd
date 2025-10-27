@@ -1,0 +1,339 @@
+---
+title: 'Unit 3 Lecture 3: Ridge regression'
+date: "October 2, 2025"
+output: pdf_document
+---
+
+In this R demo, we will learn about the `glmnetUtils` package and how to run a cross-validated ridge regression using the `cv.glmnet()` function. 
+
+```{r, message = FALSE}
+library(tidyverse)
+library(glmnetUtils) # for cv.glmnet() 
+```
+
+```{r, include=FALSE}
+coef_tidy <- function(fit, s = NULL) {
+  # pick the underlying glmnet fit and lambda
+  if (inherits(fit, "cv.glmnet")) {
+    if (is.null(s)) s <- "lambda.1se"
+    if (is.character(s)) {
+      if (s == "lambda.min")  s_val <- fit$lambda.min
+      else if (s == "lambda.1se") s_val <- fit$lambda.1se
+      else stop("For cv.glmnet, s must be 'lambda.min', 'lambda.1se', or a numeric lambda.")
+    } else if (is.numeric(s) && length(s) == 1) {
+      s_val <- s
+    } else stop("Invalid 's' for cv.glmnet.")
+    co <- as.matrix(stats::coef(fit$glmnet.fit, s = s_val))
+  } else if (inherits(fit, "glmnet")) {
+    if (is.null(s) || !(is.numeric(s) && length(s) == 1))
+      stop("For glmnet fits, provide a numeric lambda in 's'.")
+    co <- as.matrix(stats::coef(fit, s = s))
+  } else if (inherits(fit, "lm")) {
+    # nice-to-have: also works for plain lm()
+    cf <- stats::coef(fit)
+    out <- data.frame(feature = names(cf), coefficient = as.numeric(cf), check.names = FALSE)
+    if (requireNamespace("tibble", quietly = TRUE)) return(tibble::as_tibble(out))
+    return(out)
+  } else {
+    stop("fit must be a glmnet or cv.glmnet (or lm) model.")
+  }
+
+  out <- data.frame(
+    feature     = rownames(co),
+    coefficient = as.numeric(co[, 1]),
+    check.names = FALSE
+  )
+  if (requireNamespace("tibble", quietly = TRUE)) tibble::as_tibble(out) else out
+}
+
+# Plot coefficient paths for glmnet / cv.glmnet
+# - glmnet_fit: a cv.glmnet or glmnet object
+# - data: the training data frame used to fit the model (for sds)
+# - features_to_plot: number of top features (by |coef| at s) to color and label
+# - s: "lambda.1se" (default for cv.glmnet), "lambda.min", or a numeric lambda
+# Improved plot_glmnet with nicer lambda axis
+plot_glmnet <- function(glmnet_fit, data, features_to_plot = 0, s = "lambda.1se") {
+  if (!requireNamespace("ggplot2", quietly = TRUE) ||
+      !requireNamespace("scales", quietly = TRUE)) {
+    stop("Please install 'ggplot2' and 'scales'.")
+  }
+
+  # --- Pull fit and lambda(s)
+  if (inherits(glmnet_fit, "cv.glmnet")) {
+    fit <- glmnet_fit$glmnet.fit
+    lambda_seq <- as.numeric(fit$lambda)
+    s_val <- if (is.character(s)) {
+      switch(s,
+             "lambda.1se" = glmnet_fit$lambda.1se,
+             "lambda.min" = glmnet_fit$lambda.min,
+             stop("s must be 'lambda.1se', 'lambda.min', or a numeric value."))
+    } else as.numeric(s)
+  } else if (inherits(glmnet_fit, "glmnet")) {
+    fit <- glmnet_fit
+    lambda_seq <- as.numeric(fit$lambda)
+    if (is.character(s)) stop("For a plain glmnet fit, 's' must be numeric.")
+    s_val <- as.numeric(s)
+  } else stop("glmnet_fit must be a 'cv.glmnet' or 'glmnet' object.")
+
+  # --- Coefficients across lambda path (drop intercept)
+  co <- as.matrix(stats::coef(fit, s = lambda_seq))
+  feat_names <- rownames(co)[-1]
+  co <- co[-1, , drop = FALSE]
+
+  # --- Standardize by predictor SDs from data
+  sds <- vapply(feat_names, function(nm) stats::sd(data[[nm]], na.rm = TRUE), numeric(1))
+  sds[is.na(sds)] <- 1
+  co_std <- sweep(co, 1, sds, "*")
+
+  # --- Tidy long frame
+  df <- data.frame(
+    lambda     = rep(lambda_seq, each = nrow(co_std)),
+    feature    = rep(feat_names, times = ncol(co_std)),
+    coefficient= as.vector(co_std),
+    stringsAsFactors = FALSE
+  )
+
+  # --- Reversed log10 transform with nice breaks (1e^k and 3e^k)
+  revlog10 <- scales::trans_new(
+    "revlog10",
+    transform = function(x) -log10(x),
+    inverse   = function(x) 10^(-x),
+    domain    = c(1e-300, Inf)
+  )
+  nice_lambda_breaks <- function(x) {
+    rng  <- range(x, finite = TRUE)
+    krng <- range(floor(log10(rng)), ceiling(log10(rng)))
+    k    <- seq(krng[1], krng[2])
+    cand <- c(1, 3) * rep(10^k, each = 2)
+    cand[cand >= rng[1] & cand <= rng[2]]
+  }
+
+  library(ggplot2)
+  p <- ggplot(df, aes(lambda, coefficient, group = feature)) +
+    geom_line(color = "grey70", linewidth = 0.4) +
+    geom_vline(xintercept = s_val, linetype = "dashed") +
+    scale_x_continuous(
+      trans   = revlog10,
+      breaks  = nice_lambda_breaks(lambda_seq),
+      labels  = scales::label_scientific(digits = 0),
+      expand  = expansion(mult = c(0.02, 0.02))
+    ) +
+    labs(x = expression(lambda), y = "Standardized Coefficient") +
+    theme_bw(base_size = 12) +
+    theme(panel.grid.minor.x = element_blank())
+
+  # --- Optional: highlight top-k features at lambda = s_val
+  if (features_to_plot > 0) {
+    co_at_s <- as.numeric(as.matrix(stats::coef(fit, s = s_val))[-1]) * sds
+    top_feats <- feat_names[order(abs(co_at_s), decreasing = TRUE)][
+      seq_len(min(features_to_plot, length(feat_names)))
+    ]
+    df_top <- df[df$feature %in% top_feats, ]
+    p <- p +
+      geom_line(data = df_top, aes(color = feature), linewidth = 0.9) +
+      guides(color = guide_legend(title = NULL, nrow = 1, byrow = TRUE)) +
+      theme(legend.position = "bottom")
+  }
+
+  p
+}
+```
+
+We will be applying ridge regression to study the effect of 97 socioeconomic factors on violent crimes per capita based on data from 90 communities in Florida:
+```{r, message = FALSE}
+crime_data <- read_csv("CrimeData_FL.csv")
+crime_data
+```
+
+Let's split the data into training and testing, as usual:
+```{r}
+set.seed(471)
+train_samples <- sample(1:nrow(crime_data), 0.8 * nrow(crime_data))
+crime_train <- crime_data |> filter(row_number() %in% train_samples)
+crime_test <- crime_data |> filter(!(row_number() %in% train_samples))
+```
+
+# Running a cross-validated ridge regression
+
+We call `cv.glmnet` on `crime_train`:
+```{r}
+set.seed(471)
+ridge_fit <- cv.glmnet(
+  violentcrimes.perpop ~ ., # formula notation, as usual
+  alpha = 0,                # alpha = 0 for ridge (stay tuned for more)
+  nfolds = 10,              # number of folds
+  data = crime_train        # data to run ridge on 
+)
+```
+
+A few things to note:
+
+- the sequence of penalty parameters is automatically chosen for you
+- `alpha = 0` means "ridge regression" (we'll discuss other values of alpha next lecture)
+- `nfolds` specifies the number of folds for cross-validation
+- the columns of the matrix `X` are being standardized for you behind the scenes;
+there is no need to standardize yourself
+
+# Inspecting the results
+
+The `glmnetUtils` package has a `plot()` function to produce the CV plot:
+```{r, fig.width = 4, fig.height = 3.5}
+plot(ridge_fit)
+```
+
+The `ridge_fit` object has several fields with information about the fit:
+```{r}
+# lambda sequence
+head(ridge_fit$lambda)
+# CV estimates
+head(ridge_fit$cvm)
+# CV standard errors
+head(ridge_fit$cvsd)
+# lambda achieving minimum CV error
+ridge_fit$lambda.min
+# lambda based on one-standard-error rule
+ridge_fit$lambda.1se
+```
+
+To get the fitted coefficients at the selected value of lambda, we can use the `coef_tidy()` function from the `stat471` package:
+```{r}
+coef_tidy(ridge_fit, s = "lambda.1se")
+coef_tidy(ridge_fit, s = "lambda.min")
+```
+
+If `s` is not specified then `s = lambda.1se` will be chosen by default:
+```{r}
+coef_tidy(ridge_fit)
+```
+NOTE: `cv.glmnet()` standardized the features behind the scenes, but returns coefficients that should be interpreted in the context of the original scale of the features. For instance, a coefficient of 2.9 for `household.size` means that `violentcrimes.perpop` increases by 2.9 on average when the household size goes up by one household member. 
+
+Side note: `coef_tidy()` works for usual linear model fits as well:
+```{r}
+lm_fit <- lm(violentcrimes.perpop ~ ., data = crime_train)
+coef_tidy(lm_fit)
+```
+
+Note that some of the coefficients are undefined because $p > n$:
+```{r}
+lm_fit |>
+  coef_tidy() |>
+  summarise(num_NA_coeffs = sum(is.na(coefficient)))
+```
+
+To visualize the fitted ridge coefficients as a function of lambda, we can make a trace plot like we saw in class. To do this, we can use the `plot_glmnet()` function from the `stat471` package, which by default shows a dashed line at the lambda value chosen using the one-standard-error rule:
+```{r, fig.width = 5, fig.height = 3.5}
+plot_glmnet(glmnet_fit = ridge_fit, data = crime_train)
+```
+
+NOTE: We must pass in the data as well as the fit object into `plot_glmnet()`.
+
+If we want to annotate the features with the top few coefficients, we can use the `features_to_plot` argument:
+
+```{r, fig.width = 5, fig.height = 5}
+plot_glmnet(ridge_fit, crime_train, features_to_plot = 7)
+```
+
+NOTE: Unlike the output of `coef_tidy()`, the coefficients plotted by `plot_glmnet()` are for the *standardized* features. For example, let's see what is the standard deviation of `household.size`:
+```{r}
+crime_train |> 
+  summarize(sd(household.size))
+```
+So if we have a coefficient of 0.78 for the standardized version of this variable, it means that when the household size increases by one standard deviation (i.e. by 0.27 household members), the response increases by 0.8. We can translate this back to the unnormalized scale by noting that increasing the household size by one household member will increase the response by 0.8/0.27 = 2.9, which is the unnormalized coefficient we found before.
+
+The default `glmnet` package also offers a `plot()` function to produce a trace plot, but it only applies to `glmnet` objects (not `cv.glmnet` objects). Here is how to use it:
+
+```{r, fig.width = 5, fig.height = 3.5}
+plot(ridge_fit$glmnet.fit, xvar = "lambda", label = TRUE)
+```
+
+```{r, fig.width = 5, fig.height = 3.5}
+names(ridge_fit)
+```
+
+
+# Making predictions
+
+To make predictions on the test data, we can use the `predict` function (which we've seen before):
+```{r}
+ridge_predictions <- predict(ridge_fit, newdata = crime_test, s = "lambda.1se")
+ridge_predictions
+```
+
+We can cast this to a vector using `as.numeric()`:
+```{r}
+ridge_predictions <- as.numeric(ridge_predictions)
+ridge_predictions
+```
+We can evaluate the root-mean-squared-error as before:
+```{r}
+RMSE <- sqrt(mean((ridge_predictions - crime_test$violentcrimes.perpop)^2))
+RMSE
+```
+
+# Ridge logistic regression
+
+We can also use `cv.glmnet()` to run a ridge-penalized logistic regression. Let's try it out on a binarized version of `crime_data`:
+```{r}
+crime_train_binary <- crime_train |>
+  mutate(high_crime = as.numeric(violentcrimes.perpop > 2000)) |>
+  select(-violentcrimes.perpop)
+crime_test_binary <- crime_test |>
+  mutate(high_crime = as.numeric(violentcrimes.perpop > 2000)) |>
+  select(-violentcrimes.perpop)
+```
+
+To run the logistic ridge regression, we call `cv.glmnet` as before, adding the argument `family = binomial` to specify that we want to do a logistic regression and the argument `type.measure = "class`: to specify that we want to use the misclassification error during cross-validation.
+```{r}
+set.seed(471)
+ridge_fit <- cv.glmnet(
+  high_crime ~ .,           # formula notation, as usual
+  alpha = 0,                # alpha = 0 means ridge
+  nfolds = 10,              # number of CV folds
+  family = "binomial",      # to specify logistic regression
+  type.measure = "class",   # use misclassification error in CV
+  data = crime_train_binary # train on crime_train_binary data
+) 
+```
+
+We can then take a look at the CV plot and the trace plot as before:
+```{r, fig.width = 4, fig.height = 3.5}
+plot(ridge_fit)
+```
+```{r, fig.width = 5, fig.height = 3.5}
+plot_glmnet(ridge_fit, crime_train_binary)
+```
+
+You can also use the `glmnet` package `plot()` function to produce a trace plot:
+```{r, fig.width = 5, fig.height = 4}
+plot(ridge_fit$glmnet.fit, xvar = "lambda", label = TRUE)
+```
+
+To predict using the fitted model, we can use the `predict` function again, this time specifying `type = "response"` to get the predictions on the probability scale (as opposed to the log-odds scale).
+```{r}
+probabilities <- predict(
+  ridge_fit,                    # fit object
+  newdata = crime_test_binary,  # new data to test on
+  s = "lambda.1se",             # which value of lambda to use
+  type = "response"             # to output probabilities
+) |> 
+  as.numeric()                  # convert to vector
+head(probabilities)
+```
+
+We can threshold the probabilities at 0.5 to get binary predictions as we did with regular logistic regression.
+
+# Exercise: Weighted ridge logistic regression
+
+1. What fraction of the observations in `crime_train_binary` are high crime?
+
+2. Use `coef_tidy()` to find the ridge coefficients for the ridge logistic regression above. Why did cross-validation choose the value of lambda that gave these coefficients?
+
+3. Use the results of the first two problems to explain why the predicted probabilities of `high_crime` obtained above are all equal to 0.1666667. 
+
+4. Let's weight the positive training observations five-fold:
+    ```{r}
+    weights <- 1*(crime_train_binary$high_crime == 0) + 5*(crime_train_binary$high_crime == 1)
+    ```
+Rerun a logistic ridge regression, additionally passing the above weight vector to the `weights` argument of `cv.glmnet()`. Store the result in an object called `ridge_fit_weighted`.
+
+5. Produce the CV plot, and comment on how and why it differs from that of the unweighted logistic ridge regression. 
