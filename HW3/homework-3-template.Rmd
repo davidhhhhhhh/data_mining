@@ -17,6 +17,40 @@ options(show.signif.stars = FALSE)
 ```
 
 ```{r, echo=FALSE}
+coef_tidy <- function(fit, s = NULL) {
+  # pick the underlying glmnet fit and lambda
+  if (inherits(fit, "cv.glmnet")) {
+    if (is.null(s)) s <- "lambda.1se"
+    if (is.character(s)) {
+      if (s == "lambda.min")  s_val <- fit$lambda.min
+      else if (s == "lambda.1se") s_val <- fit$lambda.1se
+      else stop("For cv.glmnet, s must be 'lambda.min', 'lambda.1se', or a numeric lambda.")
+    } else if (is.numeric(s) && length(s) == 1) {
+      s_val <- s
+    } else stop("Invalid 's' for cv.glmnet.")
+    co <- as.matrix(stats::coef(fit$glmnet.fit, s = s_val))
+  } else if (inherits(fit, "glmnet")) {
+    if (is.null(s) || !(is.numeric(s) && length(s) == 1))
+      stop("For glmnet fits, provide a numeric lambda in 's'.")
+    co <- as.matrix(stats::coef(fit, s = s))
+  } else if (inherits(fit, "lm")) {
+    # nice-to-have: also works for plain lm()
+    cf <- stats::coef(fit)
+    out <- data.frame(feature = names(cf), coefficient = as.numeric(cf), check.names = FALSE)
+    if (requireNamespace("tibble", quietly = TRUE)) return(tibble::as_tibble(out))
+    return(out)
+  } else {
+    stop("fit must be a glmnet or cv.glmnet (or lm) model.")
+  }
+
+  out <- data.frame(
+    feature     = rownames(co),
+    coefficient = as.numeric(co[, 1]),
+    check.names = FALSE
+  )
+  if (requireNamespace("tibble", quietly = TRUE)) tibble::as_tibble(out) else out
+}
+
 # Plot coefficient paths for glmnet / cv.glmnet
 # - glmnet_fit: a cv.glmnet or glmnet object
 # - data: the training data frame used to fit the model (for sds)
@@ -323,21 +357,78 @@ fit_2 = glm(STATUS~DEBTINC, family = "binomial", data=hmeq_train)
 summary(fit_2)
 ```
 2. **Solution.**
+Based on the model summary above, we observe for 1 increase in DEBTINC, the odds
+of default will multiply by exp(0.0911) (1.095). 
+
 3. **Solution.**
- 
+```{r}
+ggplot(hmeq_train, aes(x = DEBTINC, y = 1 * (STATUS == 1))) +
+  geom_jitter(height = 0.05, width = 0, alpha = 0.5, color = "darkblue") +
+  stat_smooth(method = "glm", method.args = list(family = "binomial"), se = FALSE, color = "red", size = 1) +
+  labs(
+    x = "Debt-to-Income Ratio (DEBTINC)",
+    y = "Probability of Default (STATUS = 1)",
+    title = "Probability of Default vs. Debt-to-Income"
+  ) +
+  theme_minimal()
+```
+**Answer**: Based on the plot, when DEBTINC is 50, the estimated probability of default is roughly 0.4. 
 
 ## Multivariate logistic regression (14 points)
 
 1. **Solution.**
+```{r}
+fit_3 = glm(STATUS~., family = "binomial", data = hmeq_train)
+summary(fit_3)
+```
+**Answer**: Based on the summary, we observe a higher DEBTINC are more likely to default when other things are held equal. And other variables are held equal, for 1 increase in NINQ, it is associated with exp(0.154) = 1.17 times more likely in terms of odds of defaults. 
 
 2. **Solution.** 
+```{r}
+# create a dataframe for the new data
+new_data <- data.frame(
+  LOAN = 10000,
+  MORTDUE = 65000,
+  VALUE = 90000,
+  REASON = "DebtCon",
+  JOB = "Sales",
+  YOJ = 5,
+  DEROG = 0,
+  DELINQ = 0,
+  CLAGE = 120,
+  NINQ = 1,
+  CLNO = 15,
+  DEBTINC = 50
+)
+
+# predict the new data point 
+predicted_prob <- predict(fit_3, newdata = new_data, type = "response")
+
+print(predicted_prob)
+```
+**Answer**: There is roughly 71.2% chance of defualt given above features. 
+
 3. **Solution.**
-```{r, eval=FALSE}
-... # TO COMPLETE
-misclass_rate <- # TO COMPLETE
-precision <- # TO COMPLETE
-recall <- # TO COMPLETE
-F1 <- # TO COMPLETE
+```{r}
+# obtain predicted prob
+prob_hat = predict(fit_3, newdata = hmeq_test, type = "response")
+
+# classify using a 0.5 threshold 
+pred_class = ifelse(prob_hat >= 0.5, "1", "0")
+pred_class = factor(pred_class, levels = c("0","1"))
+
+# calculate four components in confusion matrix
+tp = sum(pred_class == "1" & hmeq_test$STATUS == "1")
+tn = sum(pred_class == "0" & hmeq_test$STATUS == "0")
+fp = sum(pred_class == "1" & hmeq_test$STATUS == "0")
+fn = sum(pred_class == "0" & hmeq_test$STATUS == "1")
+
+# calculate metrics
+n  = nrow(hmeq_test)
+misclass_rate = (fp + fn) / n
+precision = tp / (tp + fp)
+recall = tp / (tp + fn)
+F1 = 2 * precision * recall / (precision+ recall)
   
 test_errors <- tribble(
   ~Metric, ~Value, 
@@ -347,7 +438,7 @@ test_errors <- tribble(
   "F1_score", F1
 )
 # print the tibble
-test_errors
+print(test_errors)
 ```
 
 
@@ -359,52 +450,177 @@ test_errors
 ## Exploratory data analysis (10 points)
 
 1. **Solution.**
+```{r}
+# read in data
+ames_data = read_csv("ames_housing.csv")
+print(ames_data)
+```
 2. **Solution.**
+```{r}
+# visualize the log price with 
+ggplot(data = ames_data, aes(x = log_Sale_Price)) + 
+  geom_histogram(binwidth = 0.1) + 
+  geom_vline(aes(xintercept = median(log_Sale_Price), color = "red")) + 
+  labs(title = "log sales price histogram")
+```
+**Answer**: The distribution of log sales price is roughly symmetric with some outliers at the lower end. 
+
 3. **Solution.**
+```{r}
+# Scatter plot 1: log_Sale_Price vs. Gr_Liv_Area
+ggplot(ames_data, aes(x = Gr_Liv_Area, y = log_Sale_Price)) +
+  geom_point(alpha = 0.2, color = "steelblue") +
+  geom_smooth(method = "loess", se = TRUE, color = "red") +
+  labs(
+    title = "Log Sale Price vs. Above-Ground Living Area",
+    x = "Above-Ground Living Area (sq ft)",
+    y = "Log of Sale Price"
+  ) +
+  theme_minimal()
+
+# Scatter plot 2: log_Sale_Price vs. Year_Built
+ggplot(ames_data, aes(x = Year_Built, y = log_Sale_Price)) +
+  geom_point(alpha = 0.2, color = "darkgreen") +
+  geom_smooth(method = "loess", se = TRUE, color = "red") +
+  labs(
+    title = "Log Sale Price vs. Year Built",
+    x = "Year Built",
+    y = "Log of Sale Price"
+  ) +
+  theme_minimal()
+```
+**Answer**: Based on the two plot above, we observe the log sale price tends to increase with respect to above ground living area before 4000 sq ft then decrease. And the log sales price tends to decrease when year build before 1940s then increase after that. 
 
 ## Predictive modeling preparation (1 point)
  
 
 **Solution.**
 
-```{r, eval=FALSE}
+```{r}
 set.seed(4710) # seed set for reproducibility (DO NOT CHANGE)
 n <- nrow(ames_data)
 train_samples <- sample(1:n, round(0.8 * n))
+ames_train = ames_data[train_samples,]
+ames_test = ames_data[-train_samples,]
 ```
  
 
 ## Ordinary least squares (6 points)
 
 1. **Solution.**
+```{r}
+ols_fit = lm(log_Sale_Price ~ . ,data=ames_train)
+summary(ols_fit)
+```
 2. **Solution.**
+Some NA values are in the fitted coefficients because some features are linearly dependent with others. For instance, some categorical variables, like sale condition, are not entered as factors (of which R will automatically drop one category), hence resulting the last category lienarly dependent on other categories in the same variable. 
+
 3. **Solution.**
+Despite both signs of Gr_Liv_Area and Year_Built with respect to log Sale Price are positive, those two values are close to zero (2.66e-3 for Year Build and 1.45e-4 for Gr_live_area), which does not match the patterns we see in previous two plots. 
 
 
 ## Ridge regression (13 points)
 
 1. **Solution.**
-2. **Solution.**
-3. **Solution.**
-4. **Solution.**
+```{r}
+set.seed(471)
+ridge_fit <- cv.glmnet(
+  log_Sale_Price ~ ., 
+  alpha = 0,                # alpha = 0 for ridge (stay tuned for more)
+  nfolds = 10,              # number of folds
+  data = ames_train        # data to run ridge on 
+)
 
+# plot the cv mean error as a function of lambda
+plot(ridge_fit)
+
+# identify 1se for lambda
+ridge_fit$lambda.1se
+```
+**Answer**: The lambda for 1 SE rule is 0.672. 
+
+2. **Solution.**
+**Answer**: Since each fold we have 100 fit on for each value of lambda, in total we have 10 * 100 = 1000 model fit excluding the final fit on the whole data. 
+
+3. **Solution.**
+**Answer**: Since each data is used in 9 training fold and 1 validation fold, each data is used 9 * 100 = 900 times using it. 
+
+4. **Solution.**
+```{r}
+# visualize ridge coefs 
+plot_glmnet(ridge_fit, ames_train, features_to_plot = 6)
+```
+**Answer**: None of the 6 features change sign as lambda decrease and only some of the 6 features change monotonically as lambda decreases. 
 
 
 ## Lasso regression (10 points)
 
 1. **Solution.**
+```{r}
+set.seed(471)
+lasso_fit <- cv.glmnet(
+  log_Sale_Price ~ ., 
+  alpha = 1,                # alpha = 1 for lasso 
+  nfolds = 10,              # num of folds
+  data = ames_train        # data to run on 
+)
+
+# plot the cv mean error as a function of lambda
+plot(lasso_fit)
+```
 2. **Solution.**
+```{r}
+# check 1 se lambda 
+print(lasso_fit$lambda.1se)
+
+# extract 1se lambda coefs
+beta_1se = as.matrix(coef(lasso_fit, s = lasso_fit$lambda.1se))
+
+# remove the intercept
+beta_no_intercept = beta_1se[-1, , drop = FALSE]
+
+# identify nonzero and zero coefficients
+nz_idx = which(beta_no_intercept[, 1] != 0)
+z_idx = which(beta_no_intercept[, 1] == 0)
+
+# Compute counts
+num_nonzero = length(nz_idx)
+print(num_nonzero)
+```
+**Answer**: There are 27 features have nonzero coefficients in the Lasso fit with 1 se lambda, which is 0.023. 
+
 3. **Solution.**
+```{r}
+# visualize lasso coefs 
+plot_glmnet(lasso_fit, ames_train, features_to_plot = 8)
+```
+**Answer**: Based on the plot, Gr_Liv_Area is the first feature to enter the model as lambda decreases and the same feature (Gr_Liv_Area) has the largest absolute coefficient for the most flexibly fitted Lasso. 
 
 ## Evaluation and comparison (15 points)
 
 1. **Solution.**
 
-```{r, eval=FALSE}
-... # TO COMPLETE
-mse_ols <- ... # TO COMPLETE
-mse_ridge <- ... # TO COMPLETE
-mse_lasso <- ... # TO COMPLETE
+```{r}
+# get three models predictions
+ols_predictions = predict(ols_fit, newdata = ames_test) |> as.numeric()
+
+ridge_predictions = predict(ridge_fit,
+  newdata = ames_test,
+  s = "lambda.1se"
+) |> as.numeric()
+
+lasso_predictions = predict(lasso_fit,
+  newdata = ames_test,
+  s = "lambda.1se"
+) |> as.numeric()
+
+# extract y label
+y_test = ames_test$log_Sale_Price
+
+# compute mse
+mse_ols = mean((y_test - ols_predictions)^2)
+mse_ridge = mean((y_test - ridge_predictions)^2)
+mse_lasso = mean((y_test - lasso_predictions)^2)
 
 error_for_models <- tribble(
   ~Model, ~RMSE, 
@@ -413,9 +629,43 @@ error_for_models <- tribble(
   "Lasso", mse_lasso
 )
 # print the tibble
-error_for_models
+print(error_for_models)
 ```
 
 2. **Solution.**
+**Answer** Based on the above result, we observe the OLS has the lowest RMSE compared with Ridge and Lasso regression. Since regularization models like Ridge and Lasso are used to decrease variance and increase bias, this indicates bias is the dominant driving force for test error. This makes sense, since our whole dataset has 2930 data points, which is fairly large dataset for 172 features. 
+
 3. **Solution.**
+```{r}
+# extracting coefs
+ls_coef = coef(ols_fit) |> as.numeric()
+ridge_coef = coef(ridge_fit, s = "lambda.1se") |> as.matrix()
+lasso_coef = coef(lasso_fit, s = "lambda.1se") |> as.matrix()
+
+# get feature names
+feature_names = rownames(ridge_coef)[-1]  
+ls_coef_values = ls_coef[-1]
+ridge_coef_values = ridge_coef[-1, 1]
+lasso_coef_values = lasso_coef[-1, 1]
+
+# create a coef tibble 
+coeffs = tibble(
+  feature = feature_names,
+  ls_coef = ls_coef_values,
+  ridge_coef = ridge_coef_values,
+  lasso_coef = lasso_coef_values
+) |>
+  arrange(desc(abs(ls_coef)))
+
+# print tibble
+print(coeffs)
+```
+**Answer**: we notice the coefficients magnitude from OLS is always larger than Ridge model, since OLS is the case for lambda be zero for Ridge model. 
+
 4. **Solution.**
+```{r}
+# get rows for ls coef be na 
+na_rows = coeffs |> filter(is.na(ls_coef))
+print(na_rows)
+```
+**Answer**: For the OLS NA fitted coefficients, the ridge and lasso models do not have them be NA. Ridge addresses the issue by assigning dependent features similar coefficients values and Lasso addresses the issue by randomly assigning one of the dependent features 0 coefficients. 
