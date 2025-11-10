@@ -333,23 +333,109 @@ rpart.plot(optimal_tree)
  
 
 1. **Solution.**
+```{r}
+set.seed(4710)
+# train the model 
+rf_fit = randomForest(overall_survival~., data = data_train)
+```
+
 2. **Solution.**
+```{r}
+# extract the OOB error across trees
+oob_data = tibble(
+  trees = 1:nrow(rf_fit$err.rate),
+  oob_err = rf_fit$err.rate[, "OOB"]
+)
+
+# plot
+ggplot(oob_data, aes(x = trees, y = oob_err)) +
+  geom_line() +
+  labs(
+    x = "Number of Trees",
+    y = "OOB Misclassification Error",
+    title = "OOB Error vs Number of Trees in Random Forest"
+  )
+```
 3. **Solution.**
+```{r}
+# identify OOB error for 200 trees
+oob_data[200,]
+```
+**Answer: The OOB estimate for 200 trees is 0.328**
+
 4. **Solution.**
+**Answer: a reasonable number of trees based on OOB error plot is 200 trees**. 
 
 ## Tuning the random forests (11 points)
  
 1. **Solution.**
+```{r, cache=TRUE}
+# set seed for reprehensibility
+set.seed(471)
+mvalues <- seq(5, 30)
+oob_errors <- numeric(length(mvalues))
+ntree <- 500
+for (idx in 1:length(mvalues)) {
+  m <- mvalues[idx]
+  rf_fit <- randomForest(overall_survival ~ ., mtry = m, data = data_train)
+  oob_errors[idx] <- rf_fit$err.rate[500, 'OOB']
+}
 
+results = tibble(m = mvalues, oob_err = oob_errors)
+results |>
+  ggplot(aes(x = m, y = oob_err)) +
+  geom_line() +
+  geom_point() +
+  scale_x_continuous(breaks = mvalues) +
+  labs(
+    x = "Value of m",
+    y = "OOB Misclassification Error",
+    title = "OOB Error vs M tries in Random Forest"
+  )
+```
 2. **Solution.**
+```{r}
+# identify the value min OOB error when m = 12 
+results |>
+  filter(oob_err == min(oob_err))
+```
+**Answer: when m = 12 minimizes the OOB error, which would be 0.318**
 
 3. **Solution.**
+```{r}
+# refit the model with optimal m = 12 
+set.seed(471)
+optimal_rf_fit <- randomForest(overall_survival ~ ., importance=TRUE,
+                               mtry = 12, data = data_train)
+# extract the OOB error across trees
+optimal_oob_data = tibble(
+  trees = 1:nrow(optimal_rf_fit$err.rate),
+  oob_err = optimal_rf_fit$err.rate[, "OOB"]
+)
+
+# plot
+ggplot(optimal_oob_data, aes(x = trees, y = oob_err)) +
+  geom_line() +
+  labs(
+    x = "Number of Trees",
+    y = "OOB Misclassification Error",
+    title = "optimal OOB Error vs Number of Trees in Random Forest"
+  )
+```
+**Answer: The error has flattened out**
 
 ## Variable importance (10 points)
 
 1. **Solution.**
+```{r, fig.width = 8, fig.height = 4.5}
+# plot the importance 
+varImpPlot(optimal_rf_fit, n.var = 10)
+```
 2. **Solution.**
+**Answer: the top 3 important features for accuracy are age_at_diagnosis, cohort and tumor_size; the top 3 important features for Gini index are age_at_diagnosis, integrative_cluster, and nottingham_prognostic_index.**
+
 3. **Solution.**
+**Answer: based on results in part 2, we find it makes sense for age_at_diagnosis to be an important predictor for breast cancer survival, since we would expect younger people are more likely to survive due to better physical conditions.**
  
 
 \newpage 
@@ -358,45 +444,183 @@ rpart.plot(optimal_tree)
 ## Model tuning (14 points)
  
 
-```{r, eval=FALSE}
+```{r}
 data_train = data_train %>% mutate(overall_survival = 1 * (overall_survival == 1))
 data_test = data_test %>% mutate(overall_survival = 1 * (overall_survival == 1)) 
 ```
 
 1. **Solution.**
+```{r}
+# fit three boosted tree with different interaction depths 
+set.seed(471)
+gbm_fit_1 <- gbm(overall_survival ~ .,
+  distribution = "bernoulli",
+  n.trees = 1000,
+  interaction.depth = 1,
+  shrinkage = 0.1,
+  cv.folds = 10,
+  n.cores = 1,
+  verbose = F,
+  data = data_train
+)
+
+gbm_fit_2 <- gbm(overall_survival ~ .,
+  distribution = "bernoulli",
+  n.trees = 1000,
+  interaction.depth = 2,
+  shrinkage = 0.1,
+  cv.folds = 10,
+  n.cores = 1,
+  verbose = F,
+  data = data_train
+)
+
+gbm_fit_3 <- gbm(overall_survival ~ .,
+  distribution = "bernoulli",
+  n.trees = 1000,
+  interaction.depth = 3,
+  shrinkage = 0.1,
+  cv.folds = 10,
+  n.cores = 1,
+  verbose = F,
+  data = data_train
+)
+```
 
 2. **Solution.**
+```{r}
+# concat df for 3 interaction depth
+gbm_cv_results = bind_rows(
+  tibble(
+    interaction_depth = 1,
+    ntrees = 1:length(gbm_fit_1$cv.error),
+    cv_error = gbm_fit_1$cv.error
+  ),
+  tibble(
+    interaction_depth = 2,
+    ntrees = 1:length(gbm_fit_2$cv.error),
+    cv_error = gbm_fit_2$cv.error
+  ),
+  tibble(
+    interaction_depth = 3,
+    ntrees = 1:length(gbm_fit_3$cv.error),
+    cv_error = gbm_fit_3$cv.error
+  )
+)
+```
 
 3. **Solution.**
+```{r}
+# calculate the min error for each interaction depth 
+min_lines <- gbm_cv_results |>
+  group_by(interaction_depth) |>
+  summarize(min_cv = min(cv_error))
 
+# create plot for CV errors 
+ggplot(gbm_cv_results, aes(x = ntrees, y = cv_error, color = factor(interaction_depth))) +
+  geom_line() +
+  geom_hline(data = min_lines,
+             aes(yintercept = min_cv, color = factor(interaction_depth)),
+             linetype = "dashed") +
+  labs(
+    x = "Number of Trees",
+    y = "Cross-Validation Error",
+    color = "Interaction Depth",
+    title = "GBM CV Error vs Number of Trees"
+  ) +
+  theme_minimal()
+```
 4. **Solution.**
+**Answer: Based on above plots, we observe an initial increase on the number of trees will decrease the CV error, since it reduces the bias; however, when the number of trees keeps increasing, it increases the complexity of the model, hence the variance of the model, particularly for interaction depth being 2 and 3, resulting in increase in CV error. Based on the min CV error in our training data, we identify the best interaction depth is 1.**
 
 5. **Solution.**
+```{R}
+# refit the optimal gb model 
+gbm_fit_optimal <- gbm_fit_1
+optimal_num_trees <- gbm.perf(gbm_fit_optimal, plot.it = FALSE)
+optimal_num_trees
+```
+**Answer: the optimal number of trees for our optimal interaction depth (1 in this case) is 96**
 
 ## Model interpretation (9 points)
 
 1. **Solution.**
+```{r}
+print(
+  head(
+    summary(gbm_fit_optimal, n.trees = optimal_num_trees, plotit = FALSE), 
+    n = 10)
+)
+```
+**Answer: The top three features are age_at_diagnosis, integrative_cluster, and cohort. It aligns quite well with the top three features in the random forest model evaluated with accuracy, except the random forest include tumor_size as third important feature but gradient boost model include integrative_cluster as third important feature**
+
 2. **Solution.**
+```{r}
+p1 = plot(gbm_fit_optimal, i.var = "age_at_diagnosis", n.trees = optimal_num_trees)
+
+p2 = plot(gbm_fit_optimal, i.var = "integrative_cluster", n.trees = optimal_num_trees)
+
+p3 = plot(gbm_fit_optimal, i.var = "cohort", n.trees = optimal_num_trees)
+
+plot_grid(p1, p2, p3, align = "h")
+```
+**Answer: the partial response plot for top three features in our gradient boost model makes sense because the probability of survive from breast cancer decrease when someone is older and has more integrative cluster and cohort.**
 
 \newpage 
 
 # Test set evaluation and comparison (6 points)
 
 1. **Solution.**
+```{r}
+# identify the ground truth
+truth <- data_test$overall_survival
+truth01 <- if (is.factor(truth)) as.numeric(truth) else as.numeric(truth)
+
+# get gb model predictions
+gbm_probabilities <- predict(gbm_fit_optimal,
+  n.trees = optimal_num_trees,
+  type = "response", newdata = data_test
+)
+gbm_pred01 <- as.numeric(gbm_probabilities > 0.5)
+
+# get rf model predictions
+rf_predictions <- predict(optimal_rf_fit, newdata = data_test, type = "response")
+rf_pred01 = as.numeric(as.character(rf_predictions))
+
+# get tuned decision tree predictions 
+dt_predictions = predict(optimal_tree, newdata = data_test, type = "class")
+dt_pred01 = as.numeric(as.character(dt_predictions))
+  
+misclas_err <- tibble(
+  model = c("GBM", "Random Forest", "Decision Tree"),
+  error = c(
+    mean(gbm_pred01 != truth01),
+    mean(rf_pred01  != truth01),
+    mean(dt_pred01  != truth01)
+  )
+)
+
+print(misclas_err)
+```
+
+**Answer: based on the misclassification errors for test data, the random forest model performs the best**
 
 2. **Solution.**
 
 
-```{r, eval=FALSE}
+```{r}
+# define tree test error
+tree_test_error <- mean(dt_pred01 != truth01)
+
 rf_test_err <- apply( t(apply(
-  predict(rf_optimal,
+  predict(optimal_rf_fit,
           newdata = data_test,
           type = "response",
           predict.all = TRUE)$individual,
   1, function(row) (as.numeric(cummean(as.numeric(row)) > 0.5)))),
   2, function(pred) (mean(pred != data_test$overall_survival)))
 
-gbm_test_err <- apply( predict(boost_depth3, newdata = data_test,
+gbm_test_err <- apply( predict(gbm_fit_optimal, newdata = data_test,
     type = "response", n.trees = 1:500 ), 2,
     function(p) (mean(as.numeric(p > 0.5) != data_test$overall_survival)) )
 
@@ -414,3 +638,4 @@ test_errors |> ggplot(aes(x = ntree, y = error, group = method)) +
        y = "Misclassification error on log scale", color = "Model") + 
   theme_bw()
 ```
+**Answer: it seems when the number of trees is relatively small, boosting model performs the best and when the number of trees increases, the random forest performs better, since more trees in boosting model will increase model complexity but will not affect complexity in random forest.**
