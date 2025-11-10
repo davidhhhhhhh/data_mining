@@ -1,0 +1,416 @@
+---
+title: 'STAT 4710/5710: Homework 4'
+author: 'Ying Jin'
+date: 'Due: November 11, 2025 at 11:59am'
+output:
+  bookdown::pdf_document2:
+    number_sections: yes
+    toc: yes
+    toc_depth: '3'
+urlcolor: blue
+---
+
+```{r setup, include=FALSE}
+options(scipen = 0, digits = 3) # controls number of significant digits printed
+ggplot2::theme_set(ggplot2::theme_bw()) # set ggplot theme
+options(warn=-1) # optional, to suppress warnings; comment out if you want to see warnings
+options(show.signif.stars = FALSE)
+
+
+#' cv_tree: Make a CV plot and pick tree sizes (min and 1-SE) from an rpart fit
+#'
+#' @param fit an rpart model object (classification or regression)
+#' @return a list with:
+#'   - df: data.frame of CP table augmented with nleaves
+#'   - cv_plot: ggplot object (CV error vs number of terminal nodes)
+#'   - nleaves.min, nleaves.1se: chosen sizes (terminal nodes)
+#'   - CP.min, CP.1se: corresponding complexity parameters
+#'   - xerror.min, xerror.1se: CV error at the chosen sizes
+#'
+cv_tree <- function(fit) {
+  if (!inherits(fit, "rpart")) stop("fit must be an rpart object")
+
+  if (is.null(fit$cptable)) {
+    stop("No cptable found. Fit with rpart and ensure xval > 1 (default is 10).")
+  }
+
+  # Extract CP table and augment
+  tab <- as.data.frame(fit$cptable)
+  # rpart names vary slightly; standardize
+  names(tab) <- sub("^CP$", "CP", names(tab))
+  if (!all(c("CP", "nsplit", "rel error", "xerror", "xstd") %in% names(tab))) {
+    stop("Unexpected cptable columns; got: ", paste(names(tab), collapse=", "))
+  }
+
+  tab$nleaves <- tab$nsplit + 1L
+
+  # Min-CV pick
+  i_min <- which.min(tab$`xerror`)
+  xerr_min <- tab$`xerror`[i_min]
+  se_min   <- tab$`xstd`[i_min]
+  thr_1se  <- xerr_min + se_min
+
+  # 1-SE pick: simplest (fewest leaves) whose CV error <= min + 1*SE
+  idx_ok <- which(tab$`xerror` <= thr_1se)
+  i_1se  <- idx_ok[which.min(tab$nleaves[idx_ok])]
+
+  out <- list(
+    df = tab[, c("CP", "nsplit", "nleaves", "rel error", "xerror", "xstd")]
+  )
+
+  out$nleaves.min <- tab$nleaves[i_min]
+  out$nleaves.1se <- tab$nleaves[i_1se]
+  out$CP.min      <- tab$CP[i_min]
+  out$CP.1se      <- tab$CP[i_1se]
+  out$xerror.min  <- tab$`xerror`[i_min]
+  out$xerror.1se  <- tab$`xerror`[i_1se]
+
+  # Build plot (style matching the handout)
+  if (!requireNamespace("ggplot2", quietly = TRUE)) {
+    warning("Install ggplot2 to get the plot: install.packages('ggplot2')")
+    out$cv_plot <- NULL
+    return(out)
+  }
+  library(ggplot2)
+
+  p <- ggplot(out$df, aes(x = nleaves, y = `xerror`)) +
+    geom_line() +
+    geom_point() +
+    geom_errorbar(aes(ymin = `xerror` - `xstd`, ymax = `xerror` + `xstd`), width = 0.2) +
+    geom_hline(yintercept = xerr_min, linetype = "dashed") +
+    geom_hline(yintercept = thr_1se, linetype = "dashed") +
+    geom_vline(xintercept = out$nleaves.min, linetype = "dashed") +
+    geom_vline(xintercept = out$nleaves.1se, linetype = "dashed") +
+    labs(x = "Number of terminal nodes", y = "CV error") +
+    theme_minimal(base_size = 12)
+
+  out$cv_plot <- p
+  out
+}
+```
+ 
+# Instructions {.unnumbered}
+
+## Materials and collaboration {.unlisted .unnumbered}
+
+The policy on allowed materials and collaboration is as stated on the Syllabus:
+
+>"Students are permitted to work together on homework assignments, but must write up and submit solutions individually. In particular, students may not copy each others’ solutions. Students may consult all course materials, textbooks, the internet, or AI tools (e.g. ChatGPT) to complete their homework. Students may not use solutions to problems that may be available online and/or from past iterations of the course. For each homework, students must disclose all classmates with whom they collaborated, which AI tools they used, and how they used them. Failure to do so will result in a 10-point penalty."
+
+In accordance with this policy, 
+
+*Please disclose all classmates with whom you collaborated:* NA
+
+*Please disclose which AI tools you used, and how you used them:* ChatGPT in debugging my r code. 
+
+\textbf{\textcolor{red}{Failure to answer the above questions will result in a 10-point penalty.}}
+
+## Writeup {.unlisted .unnumbered}
+
+\textcolor{blue}{Use} `homework-4-template.Rmd` \textcolor{blue}{as a starting point for your writeup, adding your solutions after "**Solution**". Add your R code using code chunks and add your text answers using **bold text**.} Consult the [preparing reports guide](https://katsevich-teaching.github.io/stat-4710-fall-2023/assets/preparing-reports.pdf) for guidance on compilation, creation of figures and tables, and presentation quality. If the instructions ask you to "print a tibble", you should print the tibble directly. 
+
+
+## Programming {.unlisted .unnumbered}
+
+We encourage you to follow the `tidyverse` paradigm for data visualization, manipulation, and wrangling, as in the first homework, to practice tidyverse workflows (e.g., `filter`, `mutate`, `group_by`, `summarize`, `join`, `ggplot2`).
+
+Students who strongly prefer to use Python for homework may do so. If you choose this option, you are **required** to present both code chunks and the corresponding outputs/interpretations in your PDF. In addition, it's recommended that you:
+
+- Use `pandas` for data manipulation (preferred, since it parallels `dplyr`).
+- Use `plotnine` for visualization (preferred, since it parallels ggplot2). If using seaborn/matplotlib, you must still include the required plot elements (labels, 45° line, smoothing curve, facets, etc.).  
+ 
+
+```{r, message=FALSE}
+library(tidyverse)
+library(cowplot)
+library(glmnetUtils)
+library(rpart)
+library(rpart.plot)
+library(kableExtra)
+library(randomForest)
+library(gbm)
+```
+
+**Code completion.** In some problems, the task is to complete an incomplete code chunk provided. In those problems, in the template, there is `eval = FALSE` in the chunk header to prevent evaluation errors. You should remove `eval = FALSE` after you have completed the code to enable evaluation and printing of results.
+
+## Grading {.unlisted .unnumbered}
+The point value for each problem sub-part is indicated. There are 100 points possible on this homework, evaluated based on the correctness of the numerical results and plots. When a problem asks for a plot:
+
+- **Axes and labels**: Always include informative axis labels and, if appropriate, titles.
+- **Required elements**: If the instructions ask for a 45° line, smoothing curve, or facets, these must be included.
+- **Clarity**: Points may be deducted if plots are cluttered, unreadable, or missing labels.
+
+## Submission {.unlisted .unnumbered}
+
+Compile your writeup to PDF and submit to Gradescope.
+
+
+
+# Case study: predicting breast cancer survival with tree-based methods {.unnumbered}
+
+
+```{r, message=FALSE}
+data = read_csv("cancer.csv")  
+data = data %>% mutate(overall_survival = factor(overall_survival))
+data = data %>%
+  mutate(across(where(is.character), as.factor))
+
+# split data 
+set.seed(4710) 
+n <- nrow(data)
+train_samples <- sample(1:n, size = 0.8 * n, replace = FALSE)
+data_train <- data[train_samples,]
+data_test <- data[setdiff(1:n, train_samples),] 
+```
+
+# Exploratory data analysis (13 points)
+ 
+
+## Class distribution (3 points)
+
+1. **Solution.**
+```{r}
+# identify distribution of overall survival 
+table(data_train$overall_survival)
+fraction = 389 / (389 + 485)
+print(fraction)
+```
+**Answer: 44.5 percent of tumors in the training set are survived cases**
+
+2. **Solution.**
+**Answer: assuming the naive classifier will always predicts the majority class, in this case is non-survived, the misclassifications error would be 44.5 percent, which are the estimated proportion of survived cases in testing dataset.**
+ 
+## Exploring feature distributions (10 points)
+
+1. **Solution.**
+```{r}
+# Plot distributions: violin overlay
+ggplot(data_train, aes(x = overall_survival, y = tumor_size, fill = overall_survival)) +
+  geom_boxplot() +
+  labs(title = "Tumor Size by Survival Status",
+       x = "Survival Status",
+       y = "Tumor Size") +
+  theme_minimal()
+```
+ 
+2. **Solution.**
+```{r}
+# Boxplot: Age at Diagnosis
+ggplot(data_train, aes(x = overall_survival, y = age_at_diagnosis, fill = overall_survival)) +
+  geom_boxplot() +
+  labs(title = "Age at Diagnosis by Survival Status",
+       x = "Survival Status",
+       y = "Age at Diagnosis (years)") +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+# Boxplot: Mutation Count
+ggplot(data_train, aes(x = overall_survival, y = mutation_count, fill = overall_survival)) +
+  geom_boxplot() +
+  labs(title = "Mutation Count by Survival Status",
+       x = "Survival Status",
+       y = "Mutation Count") +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+
+3. **Solution.**
+**Answer: Based on above three plots, we observe the median tumor size, age, and mutation counts of non survived group is larger than survived groups. The distribution for tumor size and mutation counts in both groups are right skewed with non-survived group has few more outliers at the higher end. The distribution for age is roughly symmetric for survived group and slightly left skewed for non survived group.**
+ 
+\newpage 
+
+# Classification trees (28 points)
+ 
+
+## Growing a default classification tree (12 points)
+
+1. **Solution.**
+```{r}
+# fit the tree using gini index 
+tree_fit = rpart(overall_survival ~ .,
+                 method = "class",
+                 parms = list(split = "gini"),
+                 data = data_train)
+rpart.plot(tree_fit)
+```
+
+2. **Solution.**
+```{r}
+# number of terminal nodes
+sum(tree_fit$frame$var == "<leaf>")
+
+# number of splits
+sum(tree_fit$frame$var != "<leaf>")
+```
+**Answer: The tree has 16 terminal nodes and 15 splits in the tree**
+
+3. **Solution.**
+**Answer: the right number on the middle row shows the fraction of survived samples among all the training samples belonging to that node. And the first terminal node counting from left to right has the lowest fraction of survived samples with only 12 percent of survived samples.**
+
+4. **Solution.**
+**Answer: The lowest fraction of survived sample in the training data happens when age_at_diagnosis is greater or equal to 68, and cohort is greater or equal to 3**
+
+## Tree pruning and complexity (16 points)
+ 
+
+### Fitting a large tree (10 points)
+
+1. **Solution.**
+**Answer: when the tree is not large enough, the bias will dominate the test error, which makes tree pruning less useful, since it's mainly used to reduce the variance of a large tree.**
+
+2. **Solution.**
+```{r}
+# fit the tree with controlling function 
+deep_tree_fit = rpart(overall_survival ~ .,
+                 method = "class",
+                 parms = list(split = "gini"),
+                 control = rpart.control(minsplit= 1, 
+                                         minbucket=1,
+                                         cp = 0),
+                 data = data_train)
+rpart.plot(deep_tree_fit)
+```
+
+3. **Solution.**
+
+```{r}
+cp_table <- deep_tree_fit$cptable %>%
+  as_tibble() 
+cp_table %>% kable(
+  format = "latex", row.names = NA, booktabs = TRUE, digits = 5, col.names = c(
+      "CP",
+      "Number of splits",
+      "Relative error",
+      "CV error",
+      "CV std"
+  ),
+    caption = "This is the CP table for this deepest tree."
+  ) |>
+  kable_styling(position = "center") |> kable_styling(latex_options = "HOLD_position")
+
+print(cp_table)
+```
+
+4. **Solution.**
+```{r}
+# check the number of leaves of deep tree
+sum(deep_tree_fit$frame$var == "<leaf>")
+
+# compute the average obs per node 
+nrow(data_train) / sum(deep_tree_fit$frame$var == "<leaf>")
+```
+**Answer: Based on the cp table, we have 22 distinct trees in part 3. The biggest tree has 187 splits and 188 terminal nodes. It has 4.65 observations per terminal node on average. It does not equal to 1 because there are multiple observations having similar feature values and are in the same survival class, resulting no further split necessary to reduce Gini impurity. **
+ 
+### Tree pruning and cross validation (6 points)
+
+1. **Solution.**
+```{r}
+# fit the cv tree function
+out = cv_tree(deep_tree_fit)
+# generate the cv plot
+out$cv_plot
+```
+
+2. **Solution.**
+```{r}
+# identify the 1se tree terminal nodes 
+out$nleaves.1se
+```
+**Answer: the 1se tree has 6 terminal nodes, which is less than the default tree in section 2.1, that has 16 terminal nodes.**
+
+3. **Solution.**
+```{r}
+# prune the optimal tree
+optimal_tree = prune(deep_tree_fit, cp = out$CP.1se)
+rpart.plot(optimal_tree)
+```
+
+\newpage 
+# Random forests (30 points)
+ 
+
+## Running a random forest with default parameters (9 points)
+ 
+
+1. **Solution.**
+2. **Solution.**
+3. **Solution.**
+4. **Solution.**
+
+## Tuning the random forests (11 points)
+ 
+1. **Solution.**
+
+2. **Solution.**
+
+3. **Solution.**
+
+## Variable importance (10 points)
+
+1. **Solution.**
+2. **Solution.**
+3. **Solution.**
+ 
+
+\newpage 
+# Boosting (23 points)
+
+## Model tuning (14 points)
+ 
+
+```{r, eval=FALSE}
+data_train = data_train %>% mutate(overall_survival = 1 * (overall_survival == 1))
+data_test = data_test %>% mutate(overall_survival = 1 * (overall_survival == 1)) 
+```
+
+1. **Solution.**
+
+2. **Solution.**
+
+3. **Solution.**
+
+4. **Solution.**
+
+5. **Solution.**
+
+## Model interpretation (9 points)
+
+1. **Solution.**
+2. **Solution.**
+
+\newpage 
+
+# Test set evaluation and comparison (6 points)
+
+1. **Solution.**
+
+2. **Solution.**
+
+
+```{r, eval=FALSE}
+rf_test_err <- apply( t(apply(
+  predict(rf_optimal,
+          newdata = data_test,
+          type = "response",
+          predict.all = TRUE)$individual,
+  1, function(row) (as.numeric(cummean(as.numeric(row)) > 0.5)))),
+  2, function(pred) (mean(pred != data_test$overall_survival)))
+
+gbm_test_err <- apply( predict(boost_depth3, newdata = data_test,
+    type = "response", n.trees = 1:500 ), 2,
+    function(p) (mean(as.numeric(p > 0.5) != data_test$overall_survival)) )
+
+rf_test_err_tibble <- tibble(ntree = 1:500, error = rf_test_err, method = 'Random forest') 
+gbm_test_err_tibble <- tibble(ntree = 1:500, error = gbm_test_err, method = 'Boosting') 
+test_errors <- bind_rows(rf_test_err_tibble, gbm_test_err_tibble)
+test_errors |> ggplot(aes(x = ntree, y = error, group = method)) +
+  geom_line(aes(color = method)) + 
+  geom_hline(yintercept = tree_test_error,
+             linetype = "dashed", color = "blue") +
+  scale_y_log10() + 
+  scale_color_manual( 
+    values = c("red", "green") )+
+  labs(x = "Number of trees",
+       y = "Misclassification error on log scale", color = "Model") + 
+  theme_bw()
+```
