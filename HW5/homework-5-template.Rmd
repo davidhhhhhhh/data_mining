@@ -1,0 +1,307 @@
+---
+title: 'STAT 4710: Homework 5'
+author: 'Put your name here'
+date: 'Due: December 8, 2025 at 11:59am'
+output:
+  bookdown::pdf_document2:
+    number_sections: yes
+    toc: yes
+    toc_depth: '3'
+urlcolor: blue
+---
+
+```{r setup, include=FALSE}
+options(scipen = 0, digits = 3) # controls number of significant digits printed
+ggplot2::theme_set(ggplot2::theme_bw()) # set ggplot theme
+options(warn=-1) # optional, to suppress warnings; comment out if you want to see warnings
+options(show.signif.stars = FALSE)
+# figure placement
+knitr::opts_chunk$set(fig.pos = "!h", fig.align = "center")
+
+library(torch)
+library(torchvision)
+library(luz)  
+library(tidyverse)
+library(kableExtra)
+library(patchwork)
+set.seed(4710); torch_manual_seed(4710)
+```
+
+# Instructions {.unnumbered}
+
+## Materials and collaboration {.unlisted .unnumbered}
+
+The policy on allowed materials and collaboration is as stated on the Syllabus:
+
+>"Students are permitted to work together on homework assignments, but must write up and submit solutions individually. In particular, students may not copy each others’ solutions. Students may consult all course materials, textbooks, the internet, or AI tools (e.g. ChatGPT) to complete their homework. Students may not use solutions to problems that may be available online and/or from past iterations of the course. For each homework, students must disclose all classmates with whom they collaborated, which AI tools they used, and how they used them. Failure to do so will result in a 10-point penalty."
+
+In accordance with this policy, 
+
+*Please disclose all classmates with whom you collaborated: NA* 
+
+*Please disclose which AI tools you used, and how you used them: ChatGPT for R code debug* 
+
+\textbf{\textcolor{red}{Failure to answer the above questions will result in a 10-point penalty.}}
+
+## Writeup {.unlisted .unnumbered}
+
+\textcolor{blue}{Use} `homework-5-template.Rmd` \textcolor{blue}{as a starting point for your writeup, adding your solutions after "**Solution**". Add your R code using code chunks and add your text answers using **bold text**.} Consult the [preparing reports guide](https://katsevich-teaching.github.io/stat-4710-fall-2023/assets/preparing-reports.pdf) for guidance on compilation, creation of figures and tables, and presentation quality. If the instructions ask you to "print a tibble", you should print the tibble directly. 
+
+
+## Programming {.unlisted .unnumbered}
+
+We encourage you to follow the `tidyverse` paradigm for data visualization, manipulation, and wrangling, as in the first homework, to practice tidyverse workflows (e.g., `filter`, `mutate`, `group_by`, `summarize`, `join`, `ggplot2`).
+
+Students who strongly prefer to use Python for homework may do so. If you choose this option, you are **required** to present both code chunks and the corresponding outputs/interpretations in your PDF. In addition, it's recommended that you:
+
+- Use `pandas` for data manipulation (preferred, since it parallels `dplyr`).
+- Use `plotnine` for visualization (preferred, since it parallels ggplot2). If using seaborn/matplotlib, you must still include the required plot elements (labels, 45° line, smoothing curve, facets, etc.).  
+ 
+ 
+
+**Code completion.** In some problems, the task is to complete an incomplete code chunk provided or simply to run a given code chunk. In those problems, in the template, there is `eval = FALSE` in the chunk header to prevent evaluation errors. You should remove `eval = FALSE` after you have completed the code to enable evaluation and printing of results.
+
+## Grading {.unlisted .unnumbered}
+The point value for each problem sub-part is indicated. There are 100 points possible on this homework, evaluated based on the correctness of the numerical results and plots. When a problem asks for a plot:
+
+- **Axes and labels**: Always include informative axis labels and, if appropriate, titles.
+- **Required elements**: If the instructions ask for a 45° line, smoothing curve, or facets, these must be included.
+- **Clarity**: Points may be deducted if plots are cluttered, unreadable, or missing labels.
+
+## Submission {.unlisted .unnumbered}
+
+Compile your writeup to PDF and submit to Gradescope.
+
+\newpage
+
+
+# Case Study: Classifying Everyday Objects in CIFAR-10 {-}
+ 
+
+```{r}
+tf_function <- function(img) {
+  x <- torch_tensor(aperm(img, c(3,1,2)), dtype = torch_float()) / 255 
+  m <- torch_tensor(cifar10_mean)$view(c(-1,1,1))
+  s <- torch_tensor(cifar10_std )$view(c(-1,1,1))
+  return((x - m) / s)
+} 
+
+cifar10_mean <- c(0.4914, 0.4822, 0.4465)
+cifar10_std  <- c(0.2470, 0.2435, 0.2616)
+ 
+train_ds_full <- cifar10_dataset("./data", train = TRUE,  download = TRUE, transform = tf_function)
+test_ds  <- cifar10_dataset("./data", train = FALSE, download = TRUE, transform = tf_function)
+
+set.seed(4710)
+n <- length(train_ds_full)
+idx <- sample.int(n)
+n_train <- floor(0.8 * n)
+train_idx <- idx[1:n_train]
+valid_idx <- idx[(n_train + 1):n]
+
+batch_size <- 128
+train_dl <- dataloader(dataset_subset(train_ds_full, train_idx), batch_size = batch_size)
+valid_dl <- dataloader(dataset_subset(train_ds_full, valid_idx), batch_size = batch_size)
+test_dl  <- dataloader(test_ds,  batch_size = batch_size, shuffle = FALSE)
+
+class_names <- c("airplane","automobile","bird","cat","deer",
+                 "dog","frog","horse","ship","truck")
+ 
+```
+
+# Exploratory data analysis (18 points)  
+ 
+
+1. **Solution.**
+ 
+
+2. **Solution.**
+ 
+
+3. **Solution.**
+ 
+
+4. **Solution.**
+ 
+
+```{r, eval=FALSE}
+tensor_to_raster <- function(x_chw, # transformed data in CHW format
+                             mean = cifar10_mean,
+                             std  = cifar10_std) {
+  m <- # TO BE COMPLETED  
+  s <- # TO BE COMPLETED  
+  x_hwc <- (x_chw * s + m)$permute(c(2,3,1))
+  a <- pmin(pmax(as.array(x_hwc), 0), 1) 
+  cols <- grDevices::rgb(a[,,1], a[,,2], a[,,3]) # convert to colors
+  dim(cols) <- dim(a)[1:2]
+  return(grDevices::as.raster(cols))
+}
+```
+ 
+
+5. **Solution.**
+
+
+```{r, eval=FALSE}
+plot_mnist_grid_ggplot <- function(ds, idxs = 1:9, ncol = 3) { 
+  
+  plots <- lapply(idxs, function(i) {
+    # get the i-th sample from the dataset
+    ex <- ds[i]
+    img_array <- as.array(ex[[1]][1,,])  # Extract 28×28 matrix
+    lab <- as.integer(ex[[2]]) 
+    raster_img <- as.raster(img_array)
+    
+    # Create ggplot
+    ggplot() + 
+      annotation_raster(raster_img, xmin = 0, xmax = 1, ymin = 0, ymax = 1) +
+      labs(title = paste("Label:", lab)) +
+      theme_void() +
+      theme(plot.title = element_text(hjust = 0.5, size = 10)) +
+      coord_fixed()
+  })
+  
+  # Arrange plots in grid
+  wrap_plots(plots, ncol = ncol)
+}
+```
+ 
+
+6. **Solution.**
+ 
+
+# Logistic regression (30 points)
+ 
+
+1. **Solution.**
+ 
+2. **Solution.**
+ 
+
+3. **Solution.**
+ 
+
+```{r, eval=FALSE}
+LogisticRegression <- nn_module(
+  initialize = function() {
+    # TO BE COMPLETED  
+  },
+  forward = function(x) {
+    # TO BE COMPLETED  
+  }
+)
+```
+ 
+
+4. **Solution.**
+
+```{r, eval=FALSE}
+set.seed(4710) # for reproducibility
+
+fit_logistic <- LogisticRegression %>%
+  setup( # TO BE COMPLETED 
+    ) %>%
+  set_opt_hparams(
+    # TO BE COMPLETED
+  ) %>%
+  fit(
+    # TO BE COMPLETED
+  )
+
+plot(fit_logistic) 
+```
+ 
+
+5. **Solution.**
+ 
+6. **Solution.**
+ 
+
+7. **Solution.**
+
+```{r, eval=FALSE}
+count_params <- function(module) sum(sapply(module$parameters, \(p) as.numeric(p$numel())))
+count_params(fit_logistic$model)
+```
+ 
+# Multi-layer neural network (26 points)
+
+1. **Solution.**
+ 
+2. **Solution.**
+
+```{r, eval=FALSE}
+MLP <- nn_module(
+  initialize = function() {
+    # TO BE COMPLETED  
+  },
+  forward = function(x) {
+    # TO BE COMPLETED  
+  }
+)
+```
+ 
+
+3. **Solution.**
+
+```{r, eval=FALSE}
+set.seed(4710) # for reproducibility
+fit_mlp <- MLP %>%
+  setup( # TO BE COMPLETED 
+    ) %>%
+  set_opt_hparams(
+    # TO BE COMPLETED
+  ) %>%
+  fit(
+    # TO BE COMPLETED
+  )
+plot(fit_mlp)
+```
+ 
+4. **Solution.**
+ 
+
+5. **Solution.**
+ 
+
+# Convolutional neural network (26 points)
+ 
+1. **Solution.**
+ 
+
+
+2. **Solution.**
+
+```{r, eval=FALSE}
+SmallCNN <- nn_module(
+  initialize = function() {
+    # TO BE COMPLETED  
+  },
+  forward = function(x) {
+    # TO BE COMPLETED  
+  }
+)
+```
+ 
+
+3. **Solution.**
+
+```{r, eval=FALSE}
+set.seed(4710) # for reproducibility
+fit_cnn <- SmallCNN %>%
+  setup( # TO BE COMPLETED 
+    ) %>%
+  set_opt_hparams(
+    # TO BE COMPLETED
+  ) %>%
+  fit(
+    # TO BE COMPLETED
+  )
+plot(fit_cnn)
+```
+ 
+4. **Solution.**
+ 
+
+5. **Solution.**
+ 
