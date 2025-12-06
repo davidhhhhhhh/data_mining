@@ -1,0 +1,109 @@
+---
+title: 'Unit 5 Lecture 2: Neural Networks'
+date: "November 11, 2025"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+In this R demo, we'll be fitting fully-connected neural networks to the MNIST handwritten digit data. Its python version is here: https://colab.research.google.com/drive/1Qo3VeziJ24lkxcvM9KEt9WhYmIJsBCwX?usp=sharing 
+
+First let's load some libraries:
+```{r, message = FALSE} 
+library(cowplot)   # for side-by-side plots 
+library(tidyverse)  
+ggplot2::theme_set(ggplot2::theme_bw()) # set ggplot theme
+options(warn=-1) # optional, to suppress warnings; comment out if you want to see warnings 
+library(torch)
+library(luz)
+library(torchvision)
+```
+
+Next let's load the MNIST data as before. 
+```{r}
+# MNIST as tensors in [0,1]
+train_full <- mnist_dataset(root = "../data", train = TRUE, download = TRUE,
+                            transform = transform_to_tensor)
+test_ds    <- mnist_dataset(root = "../data", train = FALSE, download = TRUE,
+                            transform = transform_to_tensor)
+
+# basic sizes
+img_rows <- 28; img_cols <- 28; P <- img_rows * img_cols; K <- 10
+
+# 20% validation split (like validation_split=0.2)
+n <- length(train_full)
+v <- floor(0.2 * n)
+valid_ds <- dataset_subset(train_full, 1:v)
+train_ds <- dataset_subset(train_full, (v+1):n)
+
+# dataloaders (SGD/mini-batches per your slides)  :contentReference[oaicite:1]{index=1}
+train_dl <- dataloader(train_ds,  batch_size = 128, shuffle = TRUE)
+valid_dl <- dataloader(valid_ds,  batch_size = 128, shuffle = FALSE)
+test_dl  <- dataloader(test_ds,   batch_size = 256, shuffle = FALSE)
+```
+
+# Model: 1 hidden layer (256) + ReLU + Dropout + Softmax-at-loss
+
+Next, we define a neural network model with one hidden layer with 256 units and dropout rate 0.5. 
+
+```{r}
+mlp <- nn_module(
+  "MLP256",
+  initialize = function() {
+    self$flatten <- nn_flatten()
+    self$fc1  <- nn_linear(P, 256)
+    self$drop <- nn_dropout(0.5)
+    self$fc2  <- nn_linear(256, K)
+  },
+  forward = function(x) {
+    x <- self$flatten(x) # x$view(base::c(x$size(1), P))
+    x <- nnf_relu(self$fc1(x))
+    x <- self$drop(x)
+    self$fc2(x)   # logits
+  }
+)
+
+fitted <- mlp %>%
+  setup(loss = nn_cross_entropy_loss(),
+        optimizer = optim_adam,
+        metrics = list(luz_metric_accuracy())) %>%
+  set_opt_hparams(lr = 1e-2) %>%
+  fit(train_dl, epochs = 5, valid_data = valid_dl,
+      callbacks = list(
+        luz_callback_early_stopping(patience = 3, monitor = "valid_loss")#,
+        # luz_callback_model_checkpoint(path = "checkpoints/best.pt",
+        #                               monitor = "valid_loss", save_best_only = TRUE)
+      ))
+print(fitted)
+```
+
+
+# Save & reload the trained model + history
+
+```{r}
+# Save (model + optimizer state, etc.)
+luz_save(fitted, "mlp_256.pt") # can also save as "mlp_256.rds" and load accordingly
+
+# Reload later
+fitted <- luz_load("mlp_256.pt")
+
+# History plot stays available via plot(fitted)
+plot(fitted)
+```
+
+# Evaluate on test data
+
+```{r, message=FALSE}
+logits <- predict(fitted, test_dl)
+probs  <- nnf_softmax(logits, dim = 2)
+pred   <- as.integer(as.array(torch_argmax(probs, dim = 2)))
+
+# True labels
+y_true <- c()
+for (b in enumerate(test_dl)){
+  y_true <- c(y_true, as.integer(as.array(b[[2]])))
+} 
+mean(pred == y_true)                # accuracy
+table(Predicted = pred, True = y_true) 
+```

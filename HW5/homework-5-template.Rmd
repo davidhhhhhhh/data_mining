@@ -113,23 +113,34 @@ class_names <- c("airplane","automobile","bird","cat","deer",
  
 
 1. **Solution.**
- 
+```{r}
+# check the proportion of classes
+total_sample = length(train_ds_full)
+# print proportion of each class
+print(table(train_ds_full$y) / total_sample)
+```
+**Answer: We find all classes have the same proportion (10 percent) in the whole dataset.**
 
 2. **Solution.**
- 
+```{r}
+# check the dimension of images in the training data
+sample <- train_ds_full[1]
+str(sample)
+```
+**Answer: Each image has size 3x32x32**
 
 3. **Solution.**
- 
+**Answer: From a high level point of view, the tf_function normalizes the RGB values of an input image based on mean and standard deviation of `cifar10` dataset. In specific, the first line of code reshapse the image to Channel x Height x Width, convert it to a torch tensor, and divide by 255 so each RGB value is between 0 and 1. The second and third line then reshape the mean and standard deviation of `cifar10` dataset to the same shape as data tensor and normalize the data by abstracting the mean and dividing the standard deviation**
 
 4. **Solution.**
  
 
-```{r, eval=FALSE}
+```{r}
 tensor_to_raster <- function(x_chw, # transformed data in CHW format
                              mean = cifar10_mean,
                              std  = cifar10_std) {
-  m <- # TO BE COMPLETED  
-  s <- # TO BE COMPLETED  
+  m <- torch_tensor(cifar10_mean)$view(c(-1,1,1))
+  s <- torch_tensor(cifar10_std )$view(c(-1,1,1))
   x_hwc <- (x_chw * s + m)$permute(c(2,3,1))
   a <- pmin(pmax(as.array(x_hwc), 0), 1) 
   cols <- grDevices::rgb(a[,,1], a[,,2], a[,,3]) # convert to colors
@@ -142,15 +153,15 @@ tensor_to_raster <- function(x_chw, # transformed data in CHW format
 5. **Solution.**
 
 
-```{r, eval=FALSE}
-plot_mnist_grid_ggplot <- function(ds, idxs = 1:9, ncol = 3) { 
+```{r}
+plot_cifar_grid_ggplot <- function(ds, idxs = 1:6, ncol = 3) { 
   
   plots <- lapply(idxs, function(i) {
     # get the i-th sample from the dataset
-    ex <- ds[i]
-    img_array <- as.array(ex[[1]][1,,])  # Extract 28×28 matrix
-    lab <- as.integer(ex[[2]]) 
-    raster_img <- as.raster(img_array)
+    ex <- ds[i] 
+    img_array <- as.array(ex$x)  # get the 3 x 32 x 32 image
+    lab <- as.integer(ex$y) 
+    raster_img <- tensor_to_raster(img_array)
     
     # Create ggplot
     ggplot() + 
@@ -168,26 +179,35 @@ plot_mnist_grid_ggplot <- function(ds, idxs = 1:9, ncol = 3) {
  
 
 6. **Solution.**
+```{r}
+plot_cifar_grid_ggplot(train_ds_full)
+```
  
 
 # Logistic regression (30 points)
  
 
 1. **Solution.**
+**Since each image has size 3x32x32, when it is flatten, it becomes a single vector with 3072 components in it. So it's dimension would be 3072**
  
 2. **Solution.**
+**Since there are 10 classes in the label, the output will a 10 dimensional vector containing logits for each class.**
  
 
 3. **Solution.**
  
 
-```{r, eval=FALSE}
+```{r}
 LogisticRegression <- nn_module(
   initialize = function() {
-    # TO BE COMPLETED  
+    # flatten the input vector 
+    self$flatten <- nn_flatten()
+    # define shape for fc layer as 3072 x 10
+    self$fc_layer <- nn_linear(3072, 10)
   },
   forward = function(x) {
-    # TO BE COMPLETED  
+    # forward pipeline
+    x |> self$flatten() |> self$fc_layer()
   }
 )
 ```
@@ -195,31 +215,41 @@ LogisticRegression <- nn_module(
 
 4. **Solution.**
 
-```{r, eval=FALSE}
+```{r}
 set.seed(4710) # for reproducibility
 
 fit_logistic <- LogisticRegression %>%
-  setup( # TO BE COMPLETED 
+  setup( 
+    loss = nn_cross_entropy_loss(),           
+    optimizer = optim_rmsprop,
+    metrics = list(luz_metric_accuracy())
     ) %>%
   set_opt_hparams(
-    # TO BE COMPLETED
+    lr = 1e-3
   ) %>%
   fit(
-    # TO BE COMPLETED
+    train_dl, epochs = 10, valid_data = valid_dl
   )
-
+```
+Plot the fitted logistic model 
+```{r}
 plot(fit_logistic) 
 ```
- 
 
 5. **Solution.**
+**From the training curve, the training accuracy continues to rise steadily, while the validation accuracy stops improving after around epoch 5. This divergence indicates that the model is overfitting, since it keeps fitting the training data better but fails to improve on unseen data.**
  
 6. **Solution.**
- 
+```{r}
+# evaluate the model on test accuracy
+evaluate(fit_logistic, test_dl)
+```
+**Answer: The test accuracy is 0.3191.** 
 
 7. **Solution.**
+**Since the input vector has 3072 components, its number of parameters are computed by (3072+1)x10 = 30730 parameters, where the plus one means the bias term and 10 is the number of classes. This result also agrees with the output below.**
 
-```{r, eval=FALSE}
+```{r}
 count_params <- function(module) sum(sapply(module$parameters, \(p) as.numeric(p$numel())))
 count_params(fit_logistic$model)
 ```
@@ -227,16 +257,27 @@ count_params(fit_logistic$model)
 # Multi-layer neural network (26 points)
 
 1. **Solution.**
+**Since the multi-layer structure only affects the intermediate layers, the input and output dimension of NN will remain the same: a 3072 dimensional vector as input and a 10 dimensional vector as output.**
  
 2. **Solution.**
 
-```{r, eval=FALSE}
+```{r}
 MLP <- nn_module(
   initialize = function() {
-    # TO BE COMPLETED  
+    self$flatten <- nn_flatten()
+    self$fc1  <- nn_linear(3072, 256)
+    self$drop1 <- nn_dropout(0.4)
+    self$fc2  <- nn_linear(256, 128)
+    self$drop2 <- nn_dropout(0.3)
+    self$fc3  <- nn_linear(128, 10)
   },
   forward = function(x) {
-    # TO BE COMPLETED  
+    x <- self$flatten(x) # x$view(base::c(x$size(1), P))
+    x <- nnf_relu(self$fc1(x)) # first hidden layer 
+    x <- self$drop1(x)
+    x <- nnf_relu(self$fc2(x)) # second hidden layer
+    x <- self$drop2(x)
+    self$fc3(x)   # logits
   }
 )
 ```
@@ -244,41 +285,69 @@ MLP <- nn_module(
 
 3. **Solution.**
 
-```{r, eval=FALSE}
+```{r}
 set.seed(4710) # for reproducibility
 fit_mlp <- MLP %>%
-  setup( # TO BE COMPLETED 
-    ) %>%
+  setup( 
+    loss = nn_cross_entropy_loss(),
+    optimizer = optim_adam,
+    metrics = list(luz_metric_accuracy())
+  ) %>%
   set_opt_hparams(
-    # TO BE COMPLETED
+    lr = 1e-3
   ) %>%
   fit(
-    # TO BE COMPLETED
+    train_dl, epochs = 10, valid_data = valid_dl,
+    callbacks = list(
+        luz_callback_early_stopping(patience = 3, monitor = "valid_loss"),
+        luz_callback_model_checkpoint(
+          path = "checkpoints/best.pt",
+          monitor = "valid_loss", save_best_only = TRUE
+        )
+    )
   )
 plot(fit_mlp)
 ```
  
 4. **Solution.**
- 
+**Based on the training curve, we observe both training accuracy and validation accuracy increase, without reaching a plateau. This indicates the model is still in the learning process and therefore is underfitting and need more epochs during the training stage.**
 
 5. **Solution.**
- 
+```{r}
+# evaluate the model on test accuracy
+evaluate(fit_mlp, test_dl)
+```
+**Answer: The test accuracy is 0.4915.**
 
 # Convolutional neural network (26 points)
  
 1. **Solution.**
- 
+**For this NN, the dimension of the input will be a 3x32x32 tensor and the output will be 10 dimensional vector.**
 
 
 2. **Solution.**
 
-```{r, eval=FALSE}
+```{r}
 SmallCNN <- nn_module(
   initialize = function() {
-    # TO BE COMPLETED  
+    self$conv1 <- nn_conv2d(in_channels=3, out_channels=32, kernel_size=3)
+    self$conv2 <- nn_conv2d(32, 64, kernel_size=3)
+    self$pool  <- nn_max_pool2d(kernel_size=2)
+    self$drop1 <- nn_dropout(0.25)
+    self$flatten <- nn_flatten()
+    self$fc1   <- nn_linear(64*14*14, 256)  
+    self$drop2 <- nn_dropout(0.5)
+    self$fc2   <- nn_linear(256, 10)
   },
   forward = function(x) {
-    # TO BE COMPLETED  
+    x <- nnf_relu(self$conv1(x))
+    x <- nnf_relu(self$conv2(x))
+    x <- self$pool(x)
+    x <- self$drop1(x)
+    x <- self$flatten(x)   # flatten [B,64,14,14] -> [B,12544]
+    x <- nnf_relu(self$fc1(x))
+    x <- self$drop2(x)
+    self$fc2(x)     
   }
 )
 ```
@@ -286,22 +355,36 @@ SmallCNN <- nn_module(
 
 3. **Solution.**
 
-```{r, eval=FALSE}
+```{r}
 set.seed(4710) # for reproducibility
 fit_cnn <- SmallCNN %>%
-  setup( # TO BE COMPLETED 
-    ) %>%
+  setup( 
+    loss = nn_cross_entropy_loss(),
+    optimizer = optim_adam,
+    metrics = list(luz_metric_accuracy())
+  ) %>%
   set_opt_hparams(
-    # TO BE COMPLETED
+    lr = 1e-3
   ) %>%
   fit(
-    # TO BE COMPLETED
+    train_dl, epochs = 10, valid_data = valid_dl,
+    callbacks = list(
+        luz_callback_early_stopping(patience = 3, monitor = "valid_loss"),
+        luz_callback_model_checkpoint(
+          path = "checkpoints/best_cnn.pt",
+          monitor = "valid_loss", save_best_only = TRUE
+        )
+    )
   )
 plot(fit_cnn)
 ```
  
 4. **Solution.**
- 
+**From the training curve, the training accuracy continues to rise steadily, while the validation accuracy stops improving after around epoch 4. This divergence indicates that the model is overfitting, since it keeps fitting the training data better but fails to improve on unseen data.**
 
 5. **Solution.**
- 
+```{r}
+# evaluate the model on test accuracy
+evaluate(fit_cnn, test_dl)
+```
+**Answer: the test accuracy for CNN is 0.7069.**

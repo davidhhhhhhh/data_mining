@@ -1,0 +1,226 @@
+---
+title: 'Unit 5 Lecture 1: Deep Learning Preliminaries'
+date: "November 6, 2025"
+output:
+  bookdown::pdf_document2:
+    number_sections: yes 
+  html_document:
+    df_print: paged
+---
+
+In this R demo, we'll get warmed up for deep learning by fitting a multi-class logistic regression to the MNIST handwritten digit data. The inputs are 28 pixel by 28 pixel images of handwritten digits (a total of 784 pixels), and the output is one of the ten categories 0, 1,..., 9. 
+
+# Loading the torch libraries
+
+First let's load some libraries:
+```{r, message = FALSE} 
+library(tidyverse)  
+ggplot2::theme_set(ggplot2::theme_bw()) # set ggplot theme
+options(warn=-1) # optional, to suppress warnings; comment out if you want to see warnings
+# install.packages(c("torch", "luz", "torchvision"))   # run once
+library(torch)
+library(luz)
+library(torchvision)
+library(patchwork)
+```
+
+# Loading MNIST data
+
+Next let's load the MNIST data and do some reshaping and rescaling:
+```{r}
+# 1) Load MNIST (train/test) and normalize to [0,1]
+#    torchvision already returns tensors; transform_to_tensor() scales to [0,1]. 
+train_ds <- mnist_dataset(root = "./data", train = TRUE, download = TRUE,
+                            transform = transform_to_tensor)
+test_ds    <- mnist_dataset(root = "./data", train = FALSE, download = TRUE,
+                            transform = transform_to_tensor)
+```
+
+Each MNIST image is stored as a 28×28 grayscale image (in the raw files). When you load it with `torchvision::mnist_dataset()`, the dataset object reads each image file, and converts it into a 3D torch tensor of shape [1, 28, 28] (implicitly reshaping). That [1, 28, 28] is [channels, height, width], following the PyTorch convention.
+
+Let's check a data point there:
+
+```{r}
+example <- train_ds[1]
+str(example) 
+```
+
+Here the image has shape [1, 28, 28] (1 channel, 28×28 pixels), and the label is an integer from 0 to 9.
+
+# Visualize a few images
+
+Let's visualize a few images from the training set. Here you will see the labels starting from 1 because of the R nature. 
+
+```{r}
+# quick 3x3 grid
+plot_mnist_grid_ggplot <- function(ds, idxs = 1:9, ncol = 3) { 
+  
+  plots <- lapply(idxs, function(i) {
+    # get the i-th sample from the dataset
+    ex <- ds[i]
+    img_array <- as.array(ex[[1]][1,,])  # Extract 28×28 matrix
+    lab <- as.integer(ex[[2]]) 
+    # Convert grayscale matrix directly to raster
+    # as.raster() can handle grayscale matrices directly
+    raster_img <- as.raster(img_array)
+    
+    # Create ggplot
+    ggplot() + 
+      annotation_raster(raster_img, xmin = 0, xmax = 1, ymin = 0, ymax = 1) +
+      labs(title = paste("Label:", lab)) +
+      theme_void() +
+      theme(plot.title = element_text(hjust = 0.5, size = 10)) +
+      coord_fixed()
+  })
+  
+  # Arrange plots in grid
+  wrap_plots(plots, ncol = ncol)
+}
+plot_mnist_grid_ggplot(train_ds, 1:9)
+```
+# Build and train the model 
+
+## Split training and validation data
+
+First, we split off a validation set from the training data (20% of training), and create DataLoaders for batching and shuffling. 
+
+```{r, cache=TRUE}
+# Basic dataset stats 
+img_rows <- 28
+img_cols <- 28
+num_pixels <- img_rows * img_cols
+num_classes <- 10
+num_train_images <- length(train_ds)
+num_test_images  <- length(test_ds)
+
+# Split off a validation set (20% of training)
+set.seed(471)
+n <- length(train_ds)
+valid_n <- floor(0.2 * n)
+idx <- sample.int(n)
+valid_idx <- idx[1:valid_n]
+train_idx <- idx[(valid_n + 1):n]
+
+train_ds <- dataset_subset(train_ds, indices = train_idx)
+valid_ds <- dataset_subset(train_ds, indices = valid_idx) 
+
+# DataLoaders (batching & shuffling)
+train_dl <- dataloader(train_ds, batch_size = 128, shuffle = TRUE)
+valid_dl <- dataloader(valid_ds, batch_size = 128)
+test_dl  <- dataloader(test_ds,  batch_size = 256) 
+```
+
+A dataloader is a faucet for your data. You turn the handle and it gives you one mini-batch at a time (inputs + labels) until the dataset is exhausted. Then it can start over for the next epoch. This is a standard strategy in `torch` to handle large datasets that don't fit in memory, and to introduce randomness via shuffling.
+
+Let's see how it passes data in each batch. 
+
+```{r}
+b <- dataloader_make_iter(train_dl) %>% dataloader_next()
+x <- b[[1]]  # images: [batch, channels, height, width] = [128, 1, 28, 28]
+y <- b[[2]]  # labels: [128] (class indices 1..10 in R torch)
+
+dim(x)
+length(y)
+```
+
+A batch of 128 samples are retrieved! Here, `dataloader_make_iter()` creates an iterator object, something that "remembers where it is" as it walks through the dataset. Then, `dataloader_next()` asks for the next batch from that iterator. Together, they retrieve one batch of data for you. 
+
+## Define the model
+
+Now, we can define the class of model we want to train (multi-class logistic model). First, we define the input dimension (flattened image) and output dimension (number of classes). 
+```{r, message = FALSE}
+P <- img_rows * img_cols   # 28*28 = 784 input features (pixels)
+K <- 10                    # 10 classes (digits)
+```
+
+Then we define the model class using `nn_module()`, which is a constructor function for defining neural network modules in `torch`.
+
+```{r, message=FALSE}
+logreg <- nn_module(
+  "SoftmaxRegression",
+  initialize = function() { 
+    self$flatten <- nn_flatten()
+    self$fc_layer <- nn_linear(P, K) # Create a fully connected (linear) layer that maps P inputs to K outputs, and save it as a component named fc_layer (or any name you like) inside this model
+    },
+  forward = function(x) { # how to compute outputs from inputs 
+    x |> self$flatten() |> self$fc_layer()
+    }  # X\beta -> logits
+)
+```
+
+Here, `initialize` sets up a single linear layer (`nn_linear`) that maps the input features to the output classes. The `forward` function defines how the input data flows through the model. We flatten the input images from [batch, 1, 28, 28] to [batch, 784] using `view()` before passing them through the linear layer.
+
+
+## Train the model
+
+Now we can train the model using `luz`, which is a high-level interface for training `torch` models in R. We specify the loss function (cross-entropy loss for multi-class classification), the optimizer (RMSprop), and the metric (accuracy). We also set the learning rate `lr` and the number of epochs `epochs` for training.
+
+```{r, message = FALSE}
+fit_logreg <- logreg %>%
+  setup(loss = nn_cross_entropy_loss(),           
+        optimizer = optim_rmsprop,
+        metrics = list(luz_metric_accuracy())) %>%
+  set_opt_hparams(lr = 1e-3) %>%
+  fit(train_dl, epochs = 5, valid_data = valid_dl)
+
+plot(fit_logreg)
+```
+
+# Prediction and evaluation on test data
+
+## Automatic evaluation
+
+Let's evaluate the model on the test data using the code below. 
+
+```{r}
+# Test loader
+test_dl <- dataloader(test_ds, batch_size = 256)
+
+# Evaluate on test data
+evaluate(fit_logreg, test_dl)
+```
+This will give you the test loss and accuracy.
+
+## Step-by-step inspection
+
+You can also do this step-by-step to understand the outputs. First, get the predictions (logits) from the model on the test data. Then, convert the logits to probabilities using the softmax function, and finally get the predicted class labels by taking the argmax of the probabilities.
+
+```{r}
+# Predictions (logits -> softmax -> argmax)
+logits <- predict(fit_logreg, test_dl)
+probs  <- nnf_softmax(logits, dim = 2)
+pred   <- as.integer(as.array(torch_argmax(probs, dim = 2)))
+```
+
+Let's check the predicted logits, probabilities for class 1, and see the predicted labels for the first 5 test samples.
+```{r, message=FALSE}
+preds <- tibble(logits = as.array(logits)[1:5, 1],
+       probs  = as.array(probs)[1:5,1],
+       pred   = pred[1:5])
+preds
+```
+We can also check the true labels and look at the accuracy
+```{r, message=FALSE}
+# True labels
+y_true <- c(); for (b in enumerate(test_dl)) y_true <- c(y_true, as.integer(as.array(b[[2]])))
+mean(pred == y_true)                 # accuracy
+table(Predicted = pred, True = y_true)[1:5,1:5]  # peek at confusion (truncated)
+```
+
+We can also show a misclassified image
+```{r}
+# Show the first misclassified image
+wrong <- which(pred != y_true)
+if (length(wrong)) {
+  i <- wrong[1]; ex <- test_ds[i]; img <- as.array(ex[[1]][1,,])
+  old <- par(mar = c(1,1,3,1)); on.exit(par(old))
+  image(t(apply(img,2,rev)), axes = FALSE,
+        main = sprintf("Pred %d  |  True %d", pred[i], y_true[i]))
+}
+```
+
+
+
+
+
+ 

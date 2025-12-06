@@ -1,0 +1,126 @@
+---
+title: 'Unit 5 Lecture 3: Convolutional Neural Networks'
+date: "November 13, 2025"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+In this R demo, we'll be fitting convolutional neural networks to the MNIST handwritten digit data. A python version is here: https://colab.research.google.com/drive/1SRRXmXtkgCMJNJu-GLcJfpv6F2WWq7O6?usp=sharing
+
+First let's load some libraries:
+```{r, message = FALSE} 
+library(cowplot)   # for side-by-side plots 
+library(tidyverse)  
+ggplot2::theme_set(ggplot2::theme_bw()) # set ggplot theme
+options(warn=-1) # optional, to suppress warnings; comment out if you want to see warnings 
+library(torch)
+library(luz)
+library(torchvision)
+```
+
+
+Next let's load the MNIST data as before. 
+```{r}
+# MNIST as tensors in [0,1]
+train_full <- mnist_dataset(root = "../data", train = TRUE, download = TRUE,
+                            transform = transform_to_tensor)
+test_ds    <- mnist_dataset(root = "../data", train = FALSE, download = TRUE,
+                            transform = transform_to_tensor)
+
+# basic sizes
+img_rows <- 28; img_cols <- 28; P <- img_rows * img_cols; K <- 10
+
+# 20% validation split (like validation_split=0.2)
+n <- length(train_full)
+v <- floor(0.2 * n)
+valid_ds <- dataset_subset(train_full, 1:v)
+train_ds <- dataset_subset(train_full, (v+1):n)
+
+# dataloaders (SGD/mini-batches per your slides)  :contentReference[oaicite:1]{index=1}
+train_dl <- dataloader(train_ds,  batch_size = 128, shuffle = TRUE)
+valid_dl <- dataloader(valid_ds,  batch_size = 128, shuffle = FALSE)
+test_dl  <- dataloader(test_ds,   batch_size = 256, shuffle = FALSE)
+```
+
+# Build convolutional neural network 
+
+Next, we define a convolutional neural network model with two convolutional layers, one max pooling layer, and one dense layer.
+```{r}
+# model: Conv(32,3x3)->ReLU -> Conv(64,3x3)->ReLU -> MaxPool(2) -> Dropout(0.25)
+#        -> Flatten -> Dense(128)->ReLU -> Dropout(0.5) -> Dense(10)
+cnn <- nn_module(
+  "SmallCNN",
+  initialize = function() { # define model structure
+    self$conv1 <- nn_conv2d(in_channels=1, out_channels=32, kernel_size=3)
+    self$conv2 <- nn_conv2d(32, 64, kernel_size=3)
+    self$pool  <- nn_max_pool2d(kernel_size=2)
+    self$drop1 <- nn_dropout(0.25)
+    self$flatten <- nn_flatten()
+    self$fc1   <- nn_linear(64*12*12, 128)  # after 2 conv (no padding) + 2x2 pool on 28x28
+    self$drop2 <- nn_dropout(0.5)
+    self$fc2   <- nn_linear(128, 10)
+  },
+  forward = function(x) { # define forward pass
+    x <- nnf_relu(self$conv1(x))
+    x <- nnf_relu(self$conv2(x))
+    x <- self$pool(x)
+    x <- self$drop1(x)
+    x <- self$flatten(x)   # flatten [B,64,12,12] -> [B,9216]
+    x <- nnf_relu(self$fc1(x))
+    x <- self$drop2(x)
+    self$fc2(x)                           # logits; CE applies softmax internally
+  }
+)
+```
+ 
+
+# Train the CNN with adam
+
+To train this neural network, we must first define what loss function to use, which optimizer to use, and which metrics to track. We do this by *compiling* the model.
+```{r}
+dir.create("checkpoints", showWarnings = FALSE)
+fitted <- cnn %>%
+  setup(
+    loss = nn_cross_entropy_loss(),
+    optimizer = optim_adam,
+    metrics = list(luz_metric_accuracy())
+  ) %>%
+  set_opt_hparams(lr = 1e-3) %>%
+  fit(
+    train_dl, epochs = 3, valid_data = valid_dl,
+    callbacks = list(
+      luz_callback_early_stopping(patience = 2, monitor = "valid_loss") 
+    )
+  )
+```
+
+Let's plot the training/validation curves:
+
+```{r}
+plot(fitted)          # training/validation curves
+```
+
+# Evaluate on test data
+
+We can evaluate the accuracy on test data as before:
+
+```{r}
+evaluate(fitted, test_dl)
+```
+
+We can also manually create the predictions:
+
+```{r}
+# predictions
+logits <- predict(fitted, test_dl)
+probs  <- nnf_softmax(logits, dim=2)
+pred_i <- as.integer(as.array(torch_argmax(probs, dim=2)))  # 1..10
+pred   <- pred_i - 1                                        # 0..9 for display
+# true labels (1..10) -> digits 0..9
+y_true_i <- c(); for (b in enumerate(test_dl)) y_true_i <- c(y_true_i, as.integer(as.array(b[[2]])))
+y_true <- y_true_i - 1
+
+mean(pred == y_true)    # accuracy
+```
